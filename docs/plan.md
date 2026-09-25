@@ -6,7 +6,7 @@ Approved on 25 September 2026 after five clarifying questions. This copy is the 
 
 - 25 September 2026: plan approved. Stage 0 (repository scaffold, pinned dependencies, LF fixtures) and stage 1 (the vendored parse5 bundle with its bundling script) are committed locally. Nothing else is built; `src/`, `tests/unit` and `worker/` are empty. Implementation resumes from stage 2 of "Implementation stages" below, after the day-1 spikes if the UI is next.
 - Nothing has been pushed. The preview repository's doc changes are on a local branch `editor-docs` there, unpushed.
-- Tom's setup steps (section "Setup Tom does") have not started; step A1 (the Cloudflare subdomain) and A2 (the GitHub App) are the first things the next session will ask for, because the Worker URL and client id go into `wrangler.toml` and `src/config.js`.
+- 25 September 2026, later: Tom added the `edit` CNAME at Spaceship and set the Cloudflare workers.dev subdomain to `thomaswhite`, so the Worker will be `https://site-editor-auth.thomaswhite.workers.dev`. The GitHub App is being registered as "Homepage Site Editor" (the name is cosmetic; it appears only on the authorization screen). Its client id goes into `wrangler.toml` and `src/config.js` when the build starts.
 
 ## Context
 
@@ -39,8 +39,8 @@ Approved on 25 September 2026 after five clarifying questions. This copy is the 
 ## Architecture
 
 1. **Editor site** (`edit.thomaswhite.me`, Pages from `main`, `CNAME`, `noindex`): static `index.html`, `editor.css`, `frame.css`, ESM modules under `src/`, a vendored parse5 bundle, `worker/`, `tests/`, `docs/`. No framework, no runtime CDN, strict CSP meta.
-2. **GitHub App** "Tom's site editor": installed only on the preview repo (later the main repo too). User-to-server tokens (8 h access, 6-month refresh) can only touch installed repos and never more than Tom could.
-3. **Cloudflare Worker** `site-editor-auth.<subdomain>.workers.dev`: the OAuth handshake; allowlist by numeric user id (172206513) and login.
+2. **GitHub App** "Homepage Site Editor": installed only on the preview repo (later the main repo too). User-to-server tokens (8 h access, 6-month refresh) can only touch installed repos and never more than Tom could.
+3. **Cloudflare Worker** `site-editor-auth.thomaswhite.workers.dev`: the OAuth handshake; allowlist by numeric user id (172206513) and login.
 
 `src/config.js`:
 ```js
@@ -54,7 +54,7 @@ export const targets = {
   main: { ...same, repo: "ThomasWCode.github.io", assets: "https://thomaswhite.me" },
 };
 export const active = "preview";
-export const auth = { production: "https://site-editor-auth.<subdomain>.workers.dev", local: "http://127.0.0.1:8787" };
+export const auth = { production: "https://site-editor-auth.thomaswhite.workers.dev", local: "http://127.0.0.1:8787" };
 ```
 The CSP lists both site origins from day one, so the later switch is: install the App on the main repo, flip `active`, commit.
 
@@ -89,7 +89,7 @@ Four changes from the sketch after the design pass: no iframe `sandbox` (WebKit 
 
 **Render copy** (`render-copy.js`): splices on the working source: remove every `script`, `noscript`, `meta[http-equiv]`; after `<head>` insert `<meta http-equiv="Content-Security-Policy" content="script-src 'none'; form-action 'none'">`, `<base href="<assets>/">`, `<link rel="stylesheet" href="<editor origin>/frame.css">` (absolute because of `<base>`); inject `data-edit-key`, `data-edit-role` (block | locked | draft-note | draft-inline | draft-check | link | image | gallery) and `tabindex="0"` into start tags. Set via `iframe.srcdoc`. No editor UI inside the frame: outlines, the hover toolbar (Done, Approve, +, ×) and labels are parent overlays positioned from `getBoundingClientRect()` and repositioned on frame scroll/resize.
 
-**Parent CSP meta** (inherited by the srcdoc): `default-src 'none'; script-src 'self'; style-src 'self' https://new.thomaswhite.me https://thomaswhite.me; font-src https://new.thomaswhite.me https://thomaswhite.me; img-src 'self' data: https://new.thomaswhite.me https://thomaswhite.me https://i.ytimg.com; media-src https://new.thomaswhite.me https://thomaswhite.me; connect-src https://api.github.com https://site-editor-auth.<subdomain>.workers.dev; frame-src 'self'; base-uri https://new.thomaswhite.me https://thomaswhite.me; form-action 'none'; object-src 'none'`. `base-uri` must name the site origins or the child's `<base>` is refused. `frame-ancestors` cannot live in a meta tag, so `editor.js` frame-busts. Local dev adds `http://127.0.0.1:8787` to `connect-src` in memory.
+**Parent CSP meta** (inherited by the srcdoc): `default-src 'none'; script-src 'self'; style-src 'self' https://new.thomaswhite.me https://thomaswhite.me; font-src https://new.thomaswhite.me https://thomaswhite.me; img-src 'self' data: https://new.thomaswhite.me https://thomaswhite.me https://i.ytimg.com; media-src https://new.thomaswhite.me https://thomaswhite.me; connect-src https://api.github.com https://site-editor-auth.thomaswhite.workers.dev; frame-src 'self'; base-uri https://new.thomaswhite.me https://thomaswhite.me; form-action 'none'; object-src 'none'`. `base-uri` must name the site origins or the child's `<base>` is refused. `frame-ancestors` cannot live in a meta tag, so `editor.js` frame-busts. Local dev adds `http://127.0.0.1:8787` to `connect-src` in memory.
 
 **Editing**: one editing host at a time; `mousedown`/`focusin` on an unlocked block commits the previous block and sets `contentEditable="true"`; `focusout`, Enter or Escape commit and clear it. `beforeinput` (capture) allowlist: `insertText`, `insertCompositionText`, `insertReplacementText`, the `delete*` family, `historyUndo/Redo`; `insertFromPaste` becomes plain text (newlines collapsed) via `execCommand("insertText")` to keep native undo; everything else (`insertParagraph`, `insertLineBreak`, `format*`, lists, links, drop) is prevented. Every `click` inside the frame is prevented (with `<base>`, links would navigate to the live site) and routed to the side panel or block focus; `submit` and `dragstart` prevented. "Revert this block" and "Discard page changes" restore from the original source.
 
@@ -140,7 +140,7 @@ Token storage: `localStorage["siteEditor.session.v1"]` = `{login, userId, access
 | `mergePr(n, headSha)` / `updateBranch(n, headSha)` / `deleteBranch()` | `PUT /pulls/{n}/merge {merge_method:"merge", sha}` (405 not mergeable, 409 moved); `PUT /pulls/{n}/update-branch {expected_head_sha}`; `DELETE /git/refs/heads/edits` |
 | `prFiles(n)` / `deployRuns()` | changed PNG links after a baseline refresh; `pages-build-deployment` run on `main` after merge |
 
-User-facing errors: 401 → silent refresh then "Sign in again"; 403/429 with `x-ratelimit-remaining: 0` → back off until reset; 404 on a repo endpoint → "Install Tom's site editor on this repository and reload"; 422 non-fast-forward / 409 merge → re-run the stale check and retry; 405 → show `mergeable_state` ("Conflicts with main: resolve on `edits` in a Claude session"); `fetch` throws → "No connection to GitHub; your edits are still in this tab". Polling: PR + check runs every 30 s while visible (≈240 requests/hour of the 5,000 limit).
+User-facing errors: 401 → silent refresh then "Sign in again"; 403/429 with `x-ratelimit-remaining: 0` → back off until reset; 404 on a repo endpoint → "Install Homepage Site Editor on this repository and reload"; 422 non-fast-forward / 409 merge → re-run the stale check and retry; 405 → show `mergeable_state` ("Conflicts with main: resolve on `edits` in a Claude session"); `fetch` throws → "No connection to GitHub; your edits are still in this tab". Polling: PR + check runs every 30 s while visible (≈240 requests/hour of the 5,000 limit).
 
 `src/publish-flow.js` state machine: `signed_out → loading → ready ⇄ dirty → saving`; `ready → refreshing_baselines? → opening_pr → checking → publishable | attention → publishing → published → loading`. One in-flight mutation at a time (`busy` disables every action button); every mutation re-reads the ref it depends on immediately before writing.
 
@@ -192,7 +192,7 @@ The Worker URL is deterministic once the workers.dev subdomain exists, so the Ap
 
 A. Owner, browser, before the build (20 min)
 1. Cloudflare: create a free account, verify the email, open Workers & Pages, set "Your subdomain" (e.g. `thomaswcode`); tell the session the subdomain.
-2. GitHub → Settings → Developer settings → GitHub Apps → New GitHub App: name `Tom's site editor`; Homepage URL `https://edit.thomaswhite.me`; Callback URL `https://site-editor-auth.<subdomain>.workers.dev/callback`, "Add callback URL" `http://127.0.0.1:8787/callback`; "Expire user authorization tokens" on; "Request user authorization (OAuth) during installation" off; "Enable Device Flow" off; Webhook "Active" off; Repository permissions: Actions Read and write, Checks Read-only, Contents Read and write, Metadata Read-only, Pull requests Read and write, nothing else (not Workflows, not Pages); "Only on this account". Create; copy the Client ID for the session (public); "Generate a new client secret" and keep it in a password manager (never paste it into chat); no private key.
+2. GitHub → Settings → Developer settings → GitHub Apps → New GitHub App: name `Homepage Site Editor`; Homepage URL `https://edit.thomaswhite.me`; Callback URL `https://site-editor-auth.thomaswhite.workers.dev/callback`, "Add callback URL" `http://127.0.0.1:8787/callback`; "Expire user authorization tokens" on; "Request user authorization (OAuth) during installation" off; "Enable Device Flow" off; Webhook "Active" off; Repository permissions: Actions Read and write, Checks Read-only, Contents Read and write, Metadata Read-only, Pull requests Read and write, nothing else (not Workflows, not Pages); "Only on this account". Create; copy the Client ID for the session (public); "Generate a new client secret" and keep it in a password manager (never paste it into chat); no private key.
 3. Spaceship DNS: add `CNAME edit → thomaswcode.github.io` (safe now: the apex is verified on GitHub).
 
 B. Session, terminal (the build; no owner input): scaffold, vendor parse5, core modules and tests, spikes, UI, Worker, client, flow, e2e, docs; `wrangler.toml` and `src/config.js` get the client id, Worker URL and origins; local `npm test` green; one push to `main`; enable Pages via `gh api`; check `GET /pages` shows `cname: edit.thomaswhite.me`.
@@ -202,7 +202,7 @@ C. Owner and session at the same terminal (10 min)
 
 D. Owner, browser (5 min plus waiting)
 1. Repo Settings → Pages: "DNS check successful" once the CNAME resolves; tick "Enforce HTTPS" when the certificate is issued (minutes to a day), or the session runs the API call.
-2. Install the App: github.com/settings/apps → Tom's site editor → Install App → Only select repositories → `ThomasWCode.github.io-revised`.
+2. Install the App: github.com/settings/apps → Homepage Site Editor → Install App → Only select repositories → `ThomasWCode.github.io-revised`.
 
 E. Live checks (owner with the session): sign in at `https://edit.thomaswhite.me`; one-word edit on a deep page → Save (commit on `edits`, no CI) → Publish (PR opens, CI green, merge, `edits` deleted, `new.thomaswhite.me` updated with a one-word diff); a homepage edit exercises the screenshot path; sign in from a phone; Sign out, then the session tests the old refresh token; optionally a non-allowlisted account is refused.
 
