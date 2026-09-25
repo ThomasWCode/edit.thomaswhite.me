@@ -242,21 +242,55 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
     }
   }
 
+  // Waits for the frame's new document (srcdoc navigation replaces it) and
+  // wires the listeners once it is parsed, well before images finish: a click
+  // on the visible page must never go unheard.
+  function whenParsed(previous, callback) {
+    const check = () => {
+      const current = iframe.contentDocument;
+      if (current && current !== previous) {
+        if (current.readyState === "loading") current.addEventListener("DOMContentLoaded", () => callback(current), { once: true });
+        else callback(current);
+        return;
+      }
+      setTimeout(check, 10);
+    };
+    check();
+  }
+
+  let renderToken = 0;
+  let wiredDocument = null;
+
+  // Adopts the frame's current document once per document.
+  function adopt(document) {
+    if (wiredDocument === document) return;
+    wiredDocument = document;
+    doc = document;
+    wire();
+    applyChangedMarks();
+  }
+
   // Renders `next` in the frame. Keeps the scroll position; optionally puts
   // the caret in `focusKey` (selecting its text) or flashes `flashKey`.
   function render(next, { focusKey = null, flashKey = null, selectAll = false, keepScroll = true } = {}) {
     const scroll = doc && keepScroll ? { x: frameWindow().scrollX, y: frameWindow().scrollY } : null;
+    const previous = iframe.contentDocument;
+    const token = (renderToken += 1);
     editing = null;
     model = next;
     doc = null;
     pendingFocus = { focusKey, flashKey, selectAll, scroll };
+    wrap.dataset.ready = "false";
     hideToolbar();
     return new Promise((resolve) => {
+      whenParsed(previous, (parsed) => {
+        if (token === renderToken) adopt(parsed);
+      });
       iframe.addEventListener(
         "load",
         () => {
-          doc = iframe.contentDocument;
-          wire();
+          if (token !== renderToken) return resolve();
+          adopt(iframe.contentDocument);
           const { scroll: position } = pendingFocus;
           // The site sets scroll-behavior: smooth; a restore must not glide.
           if (position) frameWindow().scrollTo({ left: position.x, top: position.y, behavior: "instant" });
@@ -275,6 +309,7 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
             flash.setAttribute("data-edit-flash", "");
           }
           placeToolbar();
+          wrap.dataset.ready = "true";
           resolve();
         },
         { once: true },

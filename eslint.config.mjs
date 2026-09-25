@@ -84,7 +84,18 @@ export default [
     rules: sharedRules,
   },
   {
+    // Callbacks passed to page.evaluate run in the browser.
     files: ["tests/e2e/**/*.mjs"],
-    languageOptions: { globals: { ...nodeGlobals, document: "readonly", window: "readonly", location: "readonly" } },
+    languageOptions: {
+      globals: {
+        ...nodeGlobals,
+        DataTransfer: "readonly",
+        document: "readonly",
+        InputEvent: "readonly",
+        localStorage: "readonly",
+        location: "readonly",
+        window: "readonly",
+      },
+    },
   },
 ];
