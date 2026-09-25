@@ -1,0 +1,319 @@
+---
+permalink: /blog/how-this-site-works/
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>How this site works | Tom White</title>
+    <meta
+      name="description"
+      content="The invisible engineering behind this site: tests in three browsers, visual regression, Lighthouse budgets, CI, a public status page and consent-gated analytics."
+    />
+    <link rel="canonical" href="https://thomaswhite.me/blog/how-this-site-works/" />
+    <meta property="og:type" content="article" />
+    <meta property="og:title" content="How this site works | Tom White" />
+    <meta
+      property="og:description"
+      content="The invisible engineering behind this site: tests in three browsers, visual regression, Lighthouse budgets, CI, a public status page and consent-gated analytics."
+    />
+    <meta property="og:url" content="https://thomaswhite.me/blog/how-this-site-works/" />
+    <meta
+      property="og:image"
+      content="https://thomaswhite.me/Images/this-website.png"
+    />
+    <meta name="theme-color" content="#214e3b" />
+    <link rel="icon" href="/favicon.ico" />
+    <link rel="stylesheet" href="/CSS/general.css" />
+    <link rel="stylesheet" href="/CSS/blog.css" />
+    <script
+      async
+      id="cookieyes"
+      src="https://cdn-cookieyes.com/client_data/50db71ebcc00123857cce656/script.js"
+    ></script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "How this site works",
+        "author": {
+          "@type": "Person",
+          "name": "Tom White",
+          "url": "https://thomaswhite.me",
+          "sameAs": [
+            "https://github.com/ThomasWCode",
+            "https://www.youtube.com/@leopardbookshop7761",
+            "https://gravatar.com/thomaswhiteuk"
+          ]
+        },
+        "url": "https://thomaswhite.me/blog/how-this-site-works/",
+        "datePublished": "2026-09"
+      }
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <div class="page-container">
+      <header class="site-header">
+        <nav class="navbar" aria-label="Primary navigation">
+          <div class="navbar-inner">
+            <div class="logo-container">
+              <a href="/" class="logo-link" aria-label="Tom White home"
+                ><img
+                  src="/logo-text.png"
+                  width="421"
+                  height="241"
+                  alt="" /></a
+              ><a class="brand-name" href="/">Tom White</a>
+            </div>
+            <button
+              class="nav-toggle"
+              type="button"
+              aria-label="Open navigation menu"
+              aria-expanded="false"
+              aria-controls="primary-navigation"
+            >
+              <span class="nav-toggle-lines" aria-hidden="true"></span
+              ><span class="nav-toggle-label">Menu</span>
+            </button>
+            <div class="nav-panel" id="primary-navigation">
+              <ul class="nav-links">
+                <li><a href="/">Home</a></li>
+                <li><a href="/programming/">Programming</a></li>
+                <li data-nav-item="physics"><a href="/physics/">Physics &amp; Ideas</a></li>
+                <li data-nav-item="volunteering"><a href="/volunteering/">Volunteering</a></li>
+                <li data-nav-item="blog"><a href="/blog/" aria-current="true">Blog</a></li>
+                <li data-nav-item="sport-music-drama" class="nav-item--fallback"><a href="/sport-music-and-drama/">Sport, music &amp; drama</a></li>
+                <li data-nav-item="gallery" class="nav-item--fallback"><a href="/gallery/">Gallery</a></li>
+                <li class="nav-more">
+                  <span class="mobile-more-label">A few more pages</span
+                  ><button
+                    class="more-toggle"
+                    type="button"
+                    aria-expanded="false"
+                    aria-controls="more-navigation"
+                  >
+                    More
+                  </button>
+                  <ul class="more-menu" id="more-navigation">
+                    <li data-nav-copy="physics"><a href="/physics/">Physics &amp; Ideas</a></li>
+                    <li data-nav-copy="volunteering"><a href="/volunteering/">Volunteering</a></li>
+                    <li data-nav-copy="blog"><a href="/blog/">Blog</a></li>
+                    <li data-nav-copy="sport-music-drama" class="nav-copy--fallback"><a href="/sport-music-and-drama/">Sport, music &amp; drama</a></li>
+                    <li data-nav-copy="gallery" class="nav-copy--fallback"><a href="/gallery/">Gallery</a></li>
+                    <li><a href="/tedx/">TEDx</a></li>
+                    <li><a href="/testimonials/">Testimonials</a></li>
+                  </ul>
+                </li>
+              </ul>
+              <a class="contact-nav" href="/contact/">Contact :)</a>
+            </div>
+          </div>
+        </nav>
+      </header>
+      <main id="main-content" class="content-wrapper">
+        <section class="page-hero">
+          <div class="hero-inner">
+            <div class="hero-copy">
+              <p class="eyebrow">September 2026</p>
+              <h1>How this site works</h1>
+              <p class="hero-lede">
+                Most of this website is stuff you can’t see: the tests, checks
+                and monitoring that stop it breaking. This is how it fits
+                together.
+              </p>
+            </div>
+          </div>
+        </section>
+        <section class="section" aria-label="Post">
+          <article
+            class="prose post-body"
+            data-record="this-website"
+            data-when="2026-09"
+            data-review="2027-09-01"
+            data-draft="check"
+          >
+            <h2>Plain HTML, on purpose</h2>
+            <p>
+              Every page is hand-written HTML and CSS, with one JavaScript file
+              shared by all of them. There’s no framework and no build step: the
+              files in the repository are the files you’re looking at, served
+              by GitHub Pages.
+            </p>
+            <p>
+              The fonts, Inter and Fraunces, are hosted on the site itself
+              rather than loaded from Google, and every big photo comes in
+              smaller WebP versions so a phone doesn’t download a 6,000-pixel
+              image. The downside of no build step is that the header and
+              footer are copied into every page, which is part of why the next
+              bit exists.
+            </p>
+            <h2>Tests for everything</h2>
+            <p>Every change runs through the whole test suite on GitHub Actions.</p>
+            <ul>
+              <li>
+                Static checks read every page and make sure the basics hold: one
+                main heading, a description, a canonical link, valid HTML,
+                images whose declared sizes match the real files, and no link to
+                a file that doesn’t exist.
+              </li>
+              <li>
+                Playwright opens every page in Chromium at desktop and phone
+                sizes, with reduced motion and with JavaScript turned off, and
+                runs quicker smoke tests in Firefox and WebKit. It tries the
+                navigation, the contact form (against a fake Formspree) and the
+                gallery, and runs axe accessibility checks on every page.
+              </li>
+              <li>
+                Visual regression tests take screenshots of key pages and compare
+                them with approved ones, so a stray CSS change can’t quietly
+                break the layout.
+              </li>
+              <li>
+                Lighthouse audits the main pages three times each and fails if
+                the median performance, accessibility, best-practice or SEO
+                score drops below its budget.
+              </li>
+              <li>
+                ESLint and Stylelint catch mistakes in the JavaScript and CSS.
+              </li>
+            </ul>
+            <h2>Watching the live site</h2>
+            <p>
+              Tests only prove the code works on my side. Better Stack checks
+              the site’s pages every three minutes from four locations and
+              publishes the results on a
+              <a
+                class="external-link"
+                href="https://status.thomaswhite.me/"
+                target="_blank"
+                rel="noopener noreferrer"
+                >status page</a
+              >, linked in the footer. A scheduled job also checks the live pages every
+              morning, and the links to other sites once a week.
+            </p>
+            <h2>Small things that matter</h2>
+            <p>
+              Analytics only load if you agree to them in the cookie banner.
+              The “Last updated” date in the footer comes from the server’s
+              record of when the site was published, not from something I have
+              to remember to change. The navigation measures how much room it
+              has and moves pages into “More” instead of wrapping onto two
+              lines.
+            </p>
+            <p>
+              Once a month, a script reads every page for anything with a date
+              that is due a re-read, like a “Year 12”, and opens an issue on
+              GitHub so the site doesn’t quietly go out of date.
+            </p>
+            <h2>What building it taught me</h2>
+            <p class="draft-note" data-draft>
+              One paragraph: GitHub practice (branches, pull requests, checks on
+              every change), status pages, and what “best practice” turned out
+              to mean. Say plainly how you used AI tools to build it.
+            </p>
+          </article>
+        </section>
+        <section class="section section--paper" aria-labelledby="related-heading">
+          <div class="section-heading">
+            <p class="eyebrow">Related</p>
+            <h2 id="related-heading">Keep reading</h2>
+          </div>
+          <ul class="related-list">
+            <li>
+              <a class="editorial-card" href="/programming/#this-website"
+                ><strong>This website on Programming</strong
+                ><span>What I did, what was hard, and the links.</span></a
+              >
+            </li>
+            <li>
+              <a
+                class="editorial-card"
+                href="https://github.com/ThomasWCode/ThomasWCode.github.io"
+                target="_blank"
+                rel="noopener noreferrer"
+                ><strong>The code</strong
+                ><span>Every test and check described here, on GitHub.</span></a
+              >
+            </li>
+            <li>
+              <a class="editorial-card" href="/blog/"
+                ><strong>All posts</strong><span>Everything else I’ve written.</span></a
+              >
+            </li>
+          </ul>
+        </section>
+      </main>
+      <footer class="site-footer">
+        <div class="footer-inner">
+          <div class="footer-top">
+            <div>
+              <p class="footer-title">Heyyyy</p>
+              <p>
+                Thanks for stopping by. I hope you enjoy looking around my site.
+                If you want to get in touch, please do!
+              </p>
+            </div>
+            <div>
+              <p class="footer-heading">Pages</p>
+              <ul class="footer-links">
+                <li><a href="/">Home</a></li>
+                <li><a href="/programming/">Programming</a></li>
+                <li><a href="/physics/">Physics &amp; Ideas</a></li>
+                <li><a href="/volunteering/">Volunteering</a></li>
+                <li><a href="/blog/">Blog</a></li>
+                <li><a href="/sport-music-and-drama/">Sport, music &amp; drama</a></li>
+                <li><a href="/gallery/">Gallery</a></li>
+              </ul>
+            </div>
+            <div>
+              <p class="footer-heading">More</p>
+              <ul class="footer-links">
+                <li><a href="/tedx/">TEDx</a></li>
+                <li><a href="/testimonials/">Testimonials</a></li>
+                <li>
+                  <a
+                    class="external-link"
+                    href="https://github.com/ThomasWCode"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >GitHub</a
+                  >
+                </li>
+                <li>
+                  <a
+                    class="external-link"
+                    href="/Tom-White-CV.pdf"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >CV (PDF)</a
+                  >
+                </li>
+                <li><a href="/contact/">Contact :)</a></li>
+              </ul>
+            </div>
+          </div>
+          <div class="footer-bottom">
+            <p>&copy; 2025–<span data-current-year>2026</span> Tom White.</p>
+            <p>
+              Last updated
+              <span data-last-updated>unknown – please enable JavaScript</span>.
+              <span class="footer-status-separator" aria-hidden="true">·</span>
+              <a
+                class="footer-status-link external-link"
+                href="https://status.thomaswhite.me/"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Website status"
+                >Status</a
+              >
+            </p>
+          </div>
+        </div>
+      </footer>
+    </div>
+    <script defer src="/JS/script.js"></script>
+  </body>
+</html>

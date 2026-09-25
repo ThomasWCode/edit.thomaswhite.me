@@ -1,0 +1,27 @@
+{
+  "name": "edit-thomaswhite-me",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node scripts/serve.mjs",
+    "worker:dev": "wrangler dev --ip 127.0.0.1 --port 8787",
+    "worker:deploy": "wrangler deploy",
+    "vendor": "node scripts/bundle-parse5.mjs",
+    "lint": "eslint .",
+    "test:unit": "node --test tests/unit/*.test.mjs",
+    "test:e2e": "playwright test",
+    "test": "npm run lint && npm run test:unit && npm run test:e2e"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "entities": "8.1.0",
+    "esbuild": "0.28.2",
+    "eslint": "10.11.0",
+    "parse5": "8.0.1",
+    "wrangler": "4.141.0"
+  }
+}
