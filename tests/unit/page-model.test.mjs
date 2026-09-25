@@ -22,6 +22,7 @@ const EXPECTED = {
   "physics/magnetic-newtons-cradle.html": { blocks: 38, locked: 1, links: 2, images: 0, drafts: 9 },
   "volunteering.html": { blocks: 53, locked: 5, links: 6, images: 5, drafts: 6 },
   "blog/index.html": { blocks: 17, locked: 1, links: 4, images: 2, drafts: 1 },
+  "blog/bridging-the-gap.html": { blocks: 24, locked: 1, links: 3, images: 0, drafts: 8 },
   "blog/how-this-site-works.html": { blocks: 25, locked: 1, links: 4, images: 0, drafts: 2 },
   "sport-music-and-drama.html": { blocks: 41, locked: 1, links: 2, images: 6, drafts: 0 },
   "gallery.html": { blocks: 21, locked: 1, links: 0, images: 17, drafts: 0 },

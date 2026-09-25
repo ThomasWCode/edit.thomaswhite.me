@@ -7,7 +7,8 @@
 import { readFileSync } from "node:fs";
 import { parse } from "../../vendor/parse5.js";
 import { targets } from "../../src/config.js";
-import { buildPageModel } from "../../src/page-model.js";
+import { commitTextEdit } from "../../src/edits.js";
+import { blockText, buildPageModel } from "../../src/page-model.js";
 import { renderCopy } from "../../src/render-copy.js";
 import { readOnlyReason } from "../../src/site-files.js";
 import { snapshotFromParse5 } from "../../src/snapshot.js";
@@ -20,6 +21,7 @@ export const PAGE_FILES = [
   "physics/magnetic-newtons-cradle.html",
   "volunteering.html",
   "blog/index.html",
+  "blog/bridging-the-gap.html",
   "blog/how-this-site-works.html",
   "sport-music-and-drama.html",
   "gallery.html",
@@ -78,6 +80,24 @@ export function typeInto(snapshot, from, to) {
   const result = visit(snapshot);
   if (!done) throw new Error(`"${from}" is not in one text node of the block`);
   return result;
+}
+
+// The key of the first block whose visible text starts with `startsWith`.
+export function blockKeyStarting(model, startsWith) {
+  const block = model.blocks.find((item) => blockText(model, item.key).startsWith(startsWith));
+  if (!block) throw new Error(`No block starting "${startsWith}" in ${model.path}`);
+  return block.key;
+}
+
+// Types `to` over `from` in the block starting with `startsWith` and commits it.
+export function editBlock(model, startsWith, from, to) {
+  const key = blockKeyStarting(model, startsWith);
+  return commitTextEdit(model, key, typeInto(renderedSnapshot(model, key), from, to)).model;
+}
+
+// Every file path in the site repository at the fixture commit (FILES.txt).
+export function siteFiles() {
+  return readFixture("FILES.txt").split("\n").filter(Boolean);
 }
 
 // Lines added and removed between two versions of a file.
