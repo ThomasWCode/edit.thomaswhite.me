@@ -210,11 +210,11 @@ export function removeAttributeSplice(model, node, name) {
   return { start, end: location.endOffset, text: "" };
 }
 
-// Removes one class token, and the whole attribute when it was the only one.
-export function removeClassTokenSplice(model, node, token) {
-  const tokens = classTokens(node);
-  if (!tokens.includes(token)) return null;
-  const remaining = tokens.filter((item) => item !== token);
+// Removes class tokens, and the whole attribute when none are left.
+export function removeClassTokenSplice(model, node, ...tokens) {
+  const current = classTokens(node);
+  if (!tokens.some((token) => current.includes(token))) return null;
+  const remaining = current.filter((item) => !tokens.includes(item));
   if (!remaining.length) return removeAttributeSplice(model, node, "class");
   return setAttributeSplice(model, node, "class", remaining.join(" "));
 }

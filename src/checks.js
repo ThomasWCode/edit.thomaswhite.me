@@ -365,8 +365,24 @@ function warnings(model, original, lines) {
   return findings;
 }
 
-// Site-wide: "passionate" may appear once across every published page.
-export function checkSite(models) {
+// Site-wide: "passionate" may appear once across every published page, and
+// every data-record value must be a "### slug" heading in docs/record.md
+// (`slugs`, when the record is loaded).
+export function checkSite(models, { slugs = null } = {}) {
+  const findings = [];
+  if (slugs) {
+    for (const model of models) {
+      walk(model, (node) => {
+        const slug = isElement(node) ? attribute(node, "data-record") : null;
+        if (slug !== null && !slugs.has(slug)) {
+          findings.push({
+            ...finding(model, "block", "record-slug", `${model.path} uses data-record="${slug}", which is not a ### heading in docs/record.md.`, node),
+            path: model.path,
+          });
+        }
+      });
+    }
+  }
   let total = 0;
   const where = [];
   for (const model of models) {
@@ -381,9 +397,16 @@ export function checkSite(models) {
       }
     });
   }
-  return total > 1
-    ? [{ level: "block", code: "passionate", message: `“Passionate” appears ${total} times across the site (${[...new Set(where)].join(", ")}); the limit is one.`, key: null, line: null }]
-    : [];
+  if (total > 1) {
+    findings.push({
+      level: "block",
+      code: "passionate",
+      message: `“Passionate” appears ${total} times across the site (${[...new Set(where)].join(", ")}); the limit is one.`,
+      key: null,
+      line: null,
+    });
+  }
+  return findings;
 }
 
 // Curls straight quotes the way the site writes them: ’ for apostrophes and
