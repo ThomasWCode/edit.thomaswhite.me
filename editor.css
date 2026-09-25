@@ -176,18 +176,19 @@ h3 {
 .notice {
   margin: 0.75rem 0;
   padding: 0.6rem 0.8rem;
-  border-left: 4px solid var(--forest);
+  border: 1px solid var(--sage);
   border-radius: var(--radius-small);
   background: var(--sage-light);
 }
 
 .notice--error {
-  border-left-color: var(--danger);
+  border-color: #e0aaa1;
   background: var(--danger-light);
+  color: #6e1a11;
 }
 
 .notice--warning {
-  border-left-color: var(--gold);
+  border-color: #e6cb8c;
   background: var(--gold-light);
 }
 
