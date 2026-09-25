@@ -47,6 +47,8 @@ test("load, save, publish, checks, merge: the whole happy path on a deep page", 
   assert.equal(fake.fileAt("main", "physics.html"), readFixture("physics.html"), "main is untouched");
   assert.equal(saved.files.get("physics.html"), await gitBlobSha(edit.text));
   assert.equal(flow.state.phase, "ready");
+  assert.equal(flow.state.aheadBy, 1, "after a save the flow knows edits is ahead, so Publish can be offered");
+  assert.deepEqual(flow.state.changedPaths, ["physics.html"]);
   assert.equal(fake.checkRuns().length, 0, "saving runs nothing on GitHub");
 
   await flow.publish();
@@ -64,6 +66,8 @@ test("load, save, publish, checks, merge: the whole happy path on a deep page", 
   const result = await flow.merge();
   assert.equal(result.merged, true);
   assert.equal(fake.head("edits"), null, "edits is deleted after the merge");
+  assert.equal(flow.state.aheadBy, 0, "nothing is left to publish");
+  assert.deepEqual(flow.state.changedPaths, []);
   assert.equal(fake.fileAt("main", "physics.html"), edit.text);
   assert.deepEqual(fake.commit(fake.head("main")).parents.length, 2, "a merge commit, as the repository's history uses");
   assert.equal(flow.state.phase, "published");

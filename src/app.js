@@ -1,0 +1,1420 @@
+// The editor once signed in: the file list, the preview, the side panel, and
+// Save and Publish. Pure modules do the work (page-model, edits, structure,
+// checks, publish-flow); this file keeps the state of each open file and draws
+// the interface.
+
+import { SignedOutError } from "./auth.js";
+import { changedLines, checkPage, checkSite, curlQuotes, isExternalRedirect, siteContext } from "./checks.js";
+import { confirmAction, openDialog, promptText } from "./dialogs.js";
+import { commitMessage, countLineChanges, lineHunks, trimEqualRuns, wordDiff } from "./diff-view.js";
+import { $, button, externalLink, h } from "./dom.js";
+import { completeDraft, EditRejectedError, MONTHS, removeAttribute, setAttribute, setNowUpdated, updatedLabel, commitTextEdit } from "./edits.js";
+import { GitHubError } from "./github-client.js";
+import { newPostSource, normaliseMarkdown, recordSlugs } from "./markdown-files.js";
+import { attribute, blockText, buildPageModel, collapse, pageTitle, textOf } from "./page-model.js";
+import { createPreview } from "./preview.js";
+import { BusyError, createPublishFlow, SaveConflictError } from "./publish-flow.js";
+import { fallbackLabel, isPublishedHtml, labelFromTitle, liveUrl, markdownFiles, readOnlyReason, sortPages } from "./site-files.js";
+import { addAfter, removalInfo, removeBlock } from "./structure.js";
+import { createWorkingStore } from "./working-store.js";
+
+const POLL_MS = 30_000;
+const DEPLOY_POLL_MS = 15_000;
+const UNDO_LIMIT = 50;
+const PREFETCH_CONCURRENCY = 4;
+
+const BLOCK_NAMES = {
+  p: "Paragraph", li: "List item", h1: "Main heading", h2: "Heading", h3: "Subheading", h4: "Label",
+  figcaption: "Caption", blockquote: "Quote", a: "Link text", span: "Text", aside: "Aside", div: "Text",
+  cite: "Title", footer: "Attribution", dt: "Term", dd: "Description", td: "Table cell", th: "Table heading",
+};
+
+export function describeError(error, target) {
+  if (error instanceof EditRejectedError) return error.message;
+  if (error instanceof SaveConflictError) return error.message;
+  if (error instanceof BusyError) return error.message;
+  if (error instanceof GitHubError) {
+    switch (error.code) {
+      case "network":
+        return "No connection to GitHub. Your edits are still in this tab.";
+      case "not_found":
+        return `The GitHub App can't see ${target.owner}/${target.repo}. Install “Homepage Site Editor” on it (GitHub → Settings → Applications), then reload.`;
+      case "rate_limited":
+        return `GitHub's rate limit was reached. Try again in ${Math.max(1, Math.ceil((error.retryAfter || 60) / 60))} minutes.`;
+      case "unauthorized":
+        return "GitHub no longer accepts this sign-in. Sign in again; unsaved edits stay in this tab.";
+      default:
+        return `GitHub said: ${error.message}`;
+    }
+  }
+  return error && error.message ? error.message : String(error);
+}
+
+export function createApp({ target, client, user, onSignedOut }) {
+  const store = createWorkingStore({ storage: sessionStorage, target });
+  const entries = new Map();
+  let currentPath = null;
+  let selection = null;
+  let generation = 0;
+  let typing = false;
+  let prefetching = null;
+  let pollTimer = null;
+  let publishDialogOpen = false;
+
+  const flow = createPublishFlow({
+    client,
+    target,
+    onChange: () => {
+      renderTopbar();
+      if (publishDialogOpen) renderPublishDialog();
+    },
+  });
+
+  const preview = createPreview({
+    iframe: $("page-frame"),
+    overlay: $("overlay"),
+    wrap: $("frame-wrap"),
+    assetsOrigin: target.assets,
+    editorOrigin: location.origin,
+    onCommit: commitBlock,
+    onSelect: (next) => {
+      selection = next;
+      renderPanel();
+    },
+    onInput: () => {
+      if (!typing) {
+        typing = true;
+        renderTopbar();
+      }
+    },
+    onShortcut: (name) => {
+      if (name === "save") startSave();
+    },
+  });
+  preview.setToolbarActions(toolbarActions);
+
+  // ---- Entries ----------------------------------------------------------------
+
+  const current = () => (currentPath ? entries.get(currentPath) : null);
+  const isDirty = (entry) => entry.status === "ready" && (entry.isNew || entry.working !== entry.original);
+  const dirtyEntries = () => [...entries.values()].filter(isDirty);
+  const pageEntries = () => [...entries.values()].filter((entry) => entry.kind === "page");
+
+  function makeEntry(path, kind, sha) {
+    return {
+      path,
+      kind,
+      loadedSha: sha ?? null,
+      label: kind === "page" ? fallbackLabel(path) : markdownLabel(path),
+      status: "unloaded",
+      loading: null,
+      original: null,
+      working: null,
+      originalModel: null,
+      model: null,
+      undo: [],
+      log: [],
+      stale: null,
+      isNew: false,
+      error: null,
+    };
+  }
+
+  function markdownLabel(path) {
+    if (path === target.markdown.record) return "Record";
+    return path.slice(target.markdown.blogSources.length).replace(/\.md$/, "");
+  }
+
+  // Builds the list from a tree, keeping loaded files whose blob is unchanged.
+  function syncEntries(files) {
+    const paths = [...files.keys()];
+    const next = new Map();
+    const keep = (path, kind) => {
+      const sha = files.get(path) ?? null;
+      const existing = entries.get(path);
+      next.set(path, existing && existing.loadedSha === sha && existing.status === "ready" ? existing : makeEntry(path, kind, sha));
+    };
+    for (const path of sortPages(paths.filter(isPublishedHtml), { order: target.pageOrder, last: target.lockedFiles })) keep(path, "page");
+    const markdown = markdownFiles(target, paths);
+    if (markdown.record) keep(markdown.record, "markdown");
+    for (const path of markdown.blogSources) keep(path, "markdown");
+    for (const path of store.paths()) {
+      const record = store.load(path);
+      if (!next.has(path) && record && record.isNew) {
+        const entry = entries.get(path) || makeEntry(path, "markdown", null);
+        entry.isNew = true;
+        next.set(path, entry);
+      }
+    }
+    entries.clear();
+    for (const [path, entry] of next) entries.set(path, entry);
+  }
+
+  function buildModel(entry, text) {
+    return buildPageModel(text, { path: entry.path, readOnlyReason: readOnlyReason(target, entry.path) });
+  }
+
+  async function ensureLoaded(entry) {
+    if (entry.status === "ready" || entry.status === "error") return entry;
+    if (entry.loading) return entry.loading;
+    entry.status = "loading";
+    entry.loading = (async () => {
+      try {
+        const text = entry.loadedSha ? await client.getBlobText(entry.loadedSha) : "";
+        entry.original = text;
+        entry.working = text;
+        if (entry.kind === "page") {
+          entry.originalModel = buildModel(entry, text);
+          entry.model = entry.originalModel;
+          const title = pageTitle(entry.model);
+          if (title) entry.label = labelFromTitle(title);
+        }
+        restoreFromStore(entry);
+        entry.status = "ready";
+      } catch (error) {
+        if (error instanceof SignedOutError) throw error;
+        entry.status = "error";
+        entry.error = error;
+      } finally {
+        entry.loading = null;
+        renderFileList();
+      }
+      return entry;
+    })();
+    return entry.loading;
+  }
+
+  function restoreFromStore(entry) {
+    const record = store.load(entry.path);
+    if (!record) return;
+    if (entry.isNew || record.loadedSha === entry.loadedSha) {
+      entry.working = record.working;
+      entry.log = Array.isArray(record.log) ? record.log : [];
+      if (record.isNew) entry.isNew = true;
+      if (entry.kind === "page") {
+        try {
+          entry.model = buildModel(entry, entry.working);
+        } catch {
+          entry.working = entry.original;
+          entry.model = entry.originalModel;
+          store.remove(entry.path);
+        }
+      }
+    } else {
+      entry.stale = record;
+    }
+  }
+
+  function persist(entry) {
+    if (isDirty(entry)) {
+      store.save(entry.path, { loadedSha: entry.loadedSha, original: entry.original, working: entry.working, log: entry.log, isNew: entry.isNew });
+    } else {
+      store.remove(entry.path);
+    }
+  }
+
+  // Loads every file in the background: labels, draft counts, and the whole
+  // site for the checks that look beyond one page.
+  function prefetchAll() {
+    if (!prefetching) {
+      prefetching = (async () => {
+        const queue = [...entries.values()].filter((entry) => entry.status === "unloaded");
+        const worker = async () => {
+          while (queue.length) {
+            const entry = queue.shift();
+            try {
+              await ensureLoaded(entry);
+            } catch (error) {
+              if (error instanceof SignedOutError) throw error;
+            }
+          }
+        };
+        await Promise.all(Array.from({ length: PREFETCH_CONCURRENCY }, worker));
+      })().finally(() => {
+        prefetching = null;
+      });
+    }
+    return prefetching;
+  }
+
+  // ---- Undo and the change log -------------------------------------------------
+
+  function pushUndo(entry) {
+    entry.undo.push({ working: entry.working, log: entry.log.map((item) => ({ ...item })) });
+    if (entry.undo.length > UNDO_LIMIT) entry.undo.shift();
+  }
+
+  function recordText(entry, key, before, after) {
+    const id = `${generation}:${key}`;
+    let item = entry.log.find((candidate) => candidate.id === id);
+    if (!item) {
+      item = { id, key, label: blockName(entry.model, key), before, after };
+      entry.log.push(item);
+    } else {
+      item.after = after;
+    }
+    if (item.after === item.before) entry.log = entry.log.filter((candidate) => candidate !== item);
+  }
+
+  function recordAction(entry, label) {
+    entry.log.push({ id: `${generation}:action:${entry.log.length}`, label, before: null, after: null });
+  }
+
+  function blockName(model, key) {
+    const node = model.nodeOf.get(key);
+    return node ? BLOCK_NAMES[node.tagName] || "Text" : "Text";
+  }
+
+  // Keys whose text differs from the file as loaded (for the gold tint).
+  function changedKeys(entry) {
+    if (!entry.model || !entry.originalModel || entry.model === entry.originalModel) return [];
+    if (entry.model.nodeOf.size !== entry.originalModel.nodeOf.size) {
+      return entry.log.filter((item) => item.id.startsWith(`${generation}:`) && item.key).map((item) => item.key);
+    }
+    return entry.model.blocks
+      .filter((block) => {
+        const original = entry.originalModel.nodeOf.get(block.key);
+        return !original || collapse(textOf(original)) !== blockText(entry.model, block.key);
+      })
+      .map((block) => block.key);
+  }
+
+  // ---- Editing -----------------------------------------------------------------
+
+  function commitBlock(key, snapshot) {
+    const entry = current();
+    typing = false;
+    if (!entry || entry.kind !== "page" || entry.status !== "ready") return;
+    const before = entry.model;
+    try {
+      const result = commitTextEdit(before, key, snapshot);
+      if (!result.changed) {
+        renderTopbar();
+        return;
+      }
+      pushUndo(entry);
+      entry.model = result.model;
+      entry.working = result.model.source;
+      if (result.restructured) generation += 1;
+      recordText(entry, key, blockText(before, key), blockText(entry.model, key));
+      preview.setModel(entry.model);
+      if (result.restructured) preview.render(entry.model);
+      afterChange(entry);
+    } catch (error) {
+      preview.render(entry.model);
+      if (error instanceof EditRejectedError) showRejected(error);
+      else toast(describeError(error, target), "error");
+    }
+  }
+
+  function afterChange(entry) {
+    persist(entry);
+    renderFileList();
+    renderTopbar();
+    if (entry.kind === "page") preview.setChangedKeys(changedKeys(entry));
+    renderPanel();
+    preview.refreshToolbar();
+  }
+
+  // Runs a structural, draft or attribute change on the current page.
+  async function applyOperation(label, operation, renderOptions = {}) {
+    preview.finishEditing();
+    const entry = current();
+    if (!entry || entry.kind !== "page") return;
+    let result;
+    try {
+      result = operation(entry.model);
+    } catch (error) {
+      toast(describeError(error, target), "error");
+      return;
+    }
+    const next = result && result.model ? result.model : result;
+    if (!next || next === entry.model) return;
+    pushUndo(entry);
+    entry.model = next;
+    entry.working = next.source;
+    generation += 1;
+    recordAction(entry, label);
+    selection = null;
+    await preview.render(entry.model, { ...renderOptions, focusKey: result.key || renderOptions.focusKey || null });
+    afterChange(entry);
+  }
+
+  function undo() {
+    preview.finishEditing();
+    const entry = current();
+    if (!entry || !entry.undo.length) return;
+    const previous = entry.undo.pop();
+    entry.working = previous.working;
+    entry.log = previous.log;
+    generation += 1;
+    if (entry.kind === "page") {
+      entry.model = buildModel(entry, entry.working);
+      preview.render(entry.model);
+    } else {
+      $("markdown-editor").value = entry.working;
+    }
+    afterChange(entry);
+  }
+
+  async function discardPage() {
+    preview.finishEditing();
+    const entry = current();
+    if (!entry || !isDirty(entry)) return;
+    const confirmed = await confirmAction($("confirm-dialog"), {
+      title: "Discard this page's changes?",
+      message: `Every unsaved change to ${entry.label} goes back to how it is on GitHub.`,
+      confirm: "Discard changes",
+      kind: "danger",
+    });
+    if (!confirmed) return;
+    if (entry.isNew) {
+      store.remove(entry.path);
+      entries.delete(entry.path);
+      renderFileList();
+      await open(firstPagePath());
+      return;
+    }
+    entry.working = entry.original;
+    entry.model = entry.originalModel;
+    entry.undo = [];
+    entry.log = [];
+    generation += 1;
+    if (entry.kind === "page") await preview.render(entry.model);
+    else $("markdown-editor").value = entry.working;
+    afterChange(entry);
+  }
+
+  function revertBlock(key) {
+    const entry = current();
+    const original = entry.originalModel.nodeOf.get(key);
+    const node = entry.model.nodeOf.get(key);
+    if (!original || !node || original.tagName !== node.tagName) return;
+    const from = original.sourceCodeLocation;
+    const to = node.sourceCodeLocation;
+    const originalInner = entry.original.slice(from.startTag.endOffset, from.endTag.startOffset);
+    applyOperation(`Reverted a ${blockName(entry.model, key).toLowerCase()}`, (model) =>
+      buildModel(entry, model.source.slice(0, to.startTag.endOffset) + originalInner + model.source.slice(to.endTag.startOffset)),
+    );
+  }
+
+  const canRevert = (entry, key) =>
+    entry.originalModel &&
+    entry.model.nodeOf.size === entry.originalModel.nodeOf.size &&
+    entry.originalModel.nodeOf.has(key) &&
+    collapse(textOf(entry.originalModel.nodeOf.get(key))) !== blockText(entry.model, key);
+
+  async function runDraft(key) {
+    const entry = current();
+    const draft = entry.model.drafts.find((item) => item.key === key);
+    if (!draft) return;
+    const original = entry.originalModel.nodeOf.get(key);
+    const unchanged = original && original.tagName === draft.node.tagName && collapse(textOf(original)) === collapse(textOf(draft.node));
+    if (draft.kind !== "check" && unchanged) {
+      const confirmed = await confirmAction($("confirm-dialog"), {
+        title: "Still the placeholder",
+        message: "This draft still has its placeholder text. Mark it done anyway?",
+        confirm: "Mark done",
+      });
+      if (!confirmed) return;
+    }
+    await applyOperation(draft.kind === "check" ? "Approved a checked draft" : "Marked a draft done", (model) => completeDraft(model, key), {
+      flashKey: draft.blockKey || null,
+    });
+  }
+
+  async function runAddAfter(key) {
+    const entry = current();
+    await applyOperation(`Added a ${entry.model.nodeOf.get(key).tagName === "li" ? "list item" : "paragraph"}`, (model) => addAfter(model, key), { selectAll: true });
+  }
+
+  async function runRemove(key) {
+    const entry = current();
+    const info = removalInfo(entry.model, key);
+    const what = info.tag === "li" ? "list item" : "paragraph";
+    const confirmed = await confirmAction($("confirm-dialog"), {
+      title: `Remove this ${what}?`,
+      message: info.lastItem
+        ? "It's the list's only item, so the list will be left empty. Undo brings it back."
+        : `“${blockText(entry.model, key).slice(0, 120)}” will be removed. Undo brings it back.`,
+      confirm: `Remove ${what}`,
+      kind: "danger",
+    });
+    if (confirmed) await applyOperation(`Removed a ${what}`, (model) => removeBlock(model, key));
+  }
+
+  function toolbarActions(key) {
+    const entry = current();
+    if (!entry || !entry.model || entry.model.readOnly) return [];
+    const block = entry.model.blockByKey.get(key);
+    if (!block || block.lock) return [];
+    const actions = [];
+    for (const draft of entry.model.drafts.filter((item) => item.key === key || item.blockKey === key)) {
+      actions.push({
+        label: draft.kind === "check" ? "Approve" : "Done",
+        title: draft.kind === "check" ? "Approve this checked draft" : "Mark this draft done",
+        kind: "draft",
+        run: () => runDraft(draft.key),
+      });
+    }
+    if (block.structuralKey) {
+      const what = entry.model.nodeOf.get(block.structuralKey).tagName === "li" ? "list item" : "paragraph";
+      actions.push({ label: "+", title: `Add a ${what} after this`, run: () => runAddAfter(block.structuralKey) });
+      actions.push({ label: "×", title: `Remove this ${what}`, kind: "danger", run: () => runRemove(block.structuralKey) });
+    }
+    return actions;
+  }
+
+  // ---- Opening files -------------------------------------------------------------
+
+  const firstPagePath = () => (entries.has("index.html") ? "index.html" : pageEntries()[0]?.path);
+
+  async function open(path) {
+    if (!entries.has(path)) path = firstPagePath();
+    if (!path) return;
+    preview.finishEditing();
+    syncMarkdown();
+    currentPath = path;
+    selection = null;
+    preview.clearSelection();
+    try {
+      sessionStorage.setItem("siteEditor.currentPage", path);
+    } catch {
+      // Storage unavailable.
+    }
+    closeSidebar();
+    const entry = entries.get(path);
+    renderFileList();
+    renderStageBar();
+    if (entry.status !== "ready") {
+      stageMessage(`Loading ${entry.label}…`);
+      $("frame-wrap").hidden = true;
+      $("markdown-editor").hidden = true;
+      await ensureLoaded(entry);
+      if (currentPath !== path) return;
+    }
+    renderStageBar();
+    if (entry.status === "error") {
+      stageMessage(describeError(entry.error, target), "error");
+      renderPanel();
+      return;
+    }
+    stageMessage("");
+    if (entry.kind === "page") {
+      $("markdown-editor").hidden = true;
+      $("frame-wrap").hidden = false;
+      await preview.render(entry.model, { keepScroll: false });
+      preview.setChangedKeys(changedKeys(entry));
+    } else {
+      $("frame-wrap").hidden = true;
+      const editor = $("markdown-editor");
+      editor.hidden = false;
+      editor.value = entry.working;
+      editor.readOnly = false;
+    }
+    renderPanel();
+    renderTopbar();
+  }
+
+  function syncMarkdown() {
+    const entry = current();
+    if (!entry || entry.kind !== "markdown" || entry.status !== "ready") return;
+    const value = $("markdown-editor").value;
+    if (value !== entry.working) {
+      pushUndo(entry);
+      entry.working = value;
+      persist(entry);
+    }
+  }
+
+  // ---- Checks and Save -------------------------------------------------------------
+
+  function checkContext() {
+    const pages = pageEntries()
+      .filter((entry) => entry.status === "ready" && entry.model)
+      .map((entry) => ({ permalink: entry.model.permalink, ids: entry.model.ids, externalRedirect: isExternalRedirect(entry.model) }));
+    const files = [...flow.state.files.keys(), ...[...entries.values()].filter((entry) => entry.isNew).map((entry) => entry.path)];
+    return siteContext({ pages, files });
+  }
+
+  function recordSlugsNow() {
+    const record = entries.get(target.markdown.record);
+    return record && record.status === "ready" ? recordSlugs(record.working) : null;
+  }
+
+  async function startSave() {
+    preview.finishEditing();
+    syncMarkdown();
+    typing = false;
+    const dirty = dirtyEntries();
+    renderTopbar();
+    if (!dirty.length || flow.state.busy) return;
+    setStatus("Checking the site before saving…");
+    try {
+      await prefetchAll();
+    } catch (error) {
+      toast(describeError(error, target), "error");
+      return;
+    }
+    const context = checkContext();
+    const results = dirty.map((entry) => ({
+      entry,
+      findings: entry.kind === "page" ? checkPage(entry.model, entry.originalModel, context) : [],
+    }));
+    const siteFindings = checkSite(
+      pageEntries().filter((entry) => entry.status === "ready").map((entry) => entry.model),
+      { slugs: recordSlugsNow() },
+    );
+    const blocking = [...results.flatMap((result) => result.findings), ...siteFindings].filter((finding) => finding.level === "block");
+    renderTopbar();
+    const choice = await openDialog($("save-dialog"), {
+      title: "Save to GitHub",
+      body: (close) => saveDialogBody(results, siteFindings, close),
+      actions: [
+        { label: "Cancel", value: null },
+        { label: `Save ${dirty.length} ${dirty.length === 1 ? "file" : "files"}`, value: "save", kind: "primary", disabled: blocking.length > 0 },
+      ],
+    });
+    if (choice === "save") await doSave(dirty);
+    else if (choice && typeof choice === "object") await choice.run();
+  }
+
+  function findingItem(finding, entry, close) {
+    const actions = [];
+    if (entry && finding.key !== null && finding.key !== undefined) {
+      actions.push(button("Go to", () => close({ run: () => goTo(entry.path, finding.key) }), { small: true, kind: "quiet" }));
+    }
+    const fix = fixFor(finding, entry);
+    if (fix) actions.push(button(fix.label, () => close({ run: async () => { await fix.run(); await startSave(); } }), { small: true }));
+    return h(
+      "li",
+      { class: `finding finding--${finding.level}` },
+      h("span", { class: "finding-level" }, finding.level === "block" ? "Must fix" : "Check"),
+      h("span", { class: "finding-message" }, finding.message, finding.line ? h("span", { class: "small" }, ` (line ${finding.line})`) : null),
+      actions.length ? h("span", { class: "finding-actions" }, actions) : null,
+    );
+  }
+
+  function fixFor(finding, entry) {
+    if (!entry || entry.kind !== "page") return null;
+    const run = (label, operation) => ({ label, run: async () => { await open(entry.path); await applyOperation(label, operation); } });
+    if (finding.fix === "now") {
+      const month = thisMonth();
+      return run(`Set Updated to ${updatedLabel(month).replace("Updated ", "")}`, (model) => setNowUpdated(model, month));
+    }
+    if (finding.fix === "new-tab") {
+      return run("Open in a new tab", (model) => setAttribute(setAttribute(model, finding.key, "target", "_blank"), finding.key, "rel", "noopener noreferrer"));
+    }
+    if (finding.fix === "same-tab") {
+      return run("Open in the same tab", (model) => removeAttribute(removeAttribute(model, finding.key, "target"), finding.key, "rel"));
+    }
+    if (finding.fix === "gallery-caption") {
+      return run("Copy the caption", (model) => {
+        const image = model.images.find((item) => item.gallery && item.gallery.buttonKey === finding.key);
+        if (!image || !image.gallery.captionKey) return model;
+        const caption = collapse(textOf(model.nodeOf.get(image.gallery.captionKey)));
+        return setAttribute(model, finding.key, "data-caption", caption);
+      });
+    }
+    if (finding.fix === "curl-quotes") return { label: "Curl the quotes", run: () => curlChangedQuotes(entry) };
+    return null;
+  }
+
+  // Curls straight quotes in the blocks that changed. Text edits keep every
+  // key, so the keys collected first stay valid as each block is committed.
+  async function curlChangedQuotes(entry) {
+    await open(entry.path);
+    const lines = changedLines(entry.original, entry.working);
+    const keys = entry.model.blocks
+      .filter((block) => {
+        const { startLine, endLine } = block.node.sourceCodeLocation;
+        for (let line = startLine; line <= endLine; line += 1) if (lines.has(line)) return /['"]/.test(textOf(block.node));
+        return false;
+      })
+      .map((block) => block.key);
+    let model = entry.model;
+    for (const key of keys) model = commitTextEdit(model, key, curledSnapshot(model, model.nodeOf.get(key))).model;
+    if (model !== entry.model) await applyOperation("Curled quotes", () => model);
+  }
+
+  // A block's snapshot with its text nodes' quotes curled.
+  function curledSnapshot(model, node) {
+    const visit = (item) => {
+      if (item.nodeName === "#text") return { type: "text", text: curlQuotes(item.value) };
+      return {
+        type: "element",
+        key: model.keyOf.get(item) ?? null,
+        tag: item.tagName,
+        attrs: [],
+        children: (item.childNodes || []).map(visit).filter(Boolean),
+      };
+    };
+    return visit(node);
+  }
+
+  function saveDialogBody(results, siteFindings, close) {
+    const sections = [];
+    const siteBlocking = siteFindings.filter((finding) => finding.level === "block");
+    if (siteFindings.length) {
+      sections.push(
+        h("section", { class: "save-file" }, h("h3", {}, "Across the site"), h("ul", { class: "finding-list" }, siteFindings.map((finding) => findingItem(finding, entries.get(finding.path), close)))),
+      );
+    }
+    const baseline = results.some(({ entry }) => target.visualBaselinePages.includes(entry.path));
+    for (const { entry, findings } of results) {
+      const text = entry.kind === "markdown" ? normaliseMarkdown(entry.working) : entry.working;
+      const counts = countLineChanges(entry.original || "", text);
+      sections.push(
+        h(
+          "section",
+          { class: "save-file" },
+          h("h3", {}, entry.label, " ", h("span", { class: "small" }, `${entry.path} · +${counts.added} −${counts.removed} lines${entry.isNew ? " · new file" : ""}`)),
+          findings.length ? h("ul", { class: "finding-list" }, findings.map((finding) => findingItem(finding, entry, close))) : null,
+          entry.log.length ? h("ul", { class: "change-list" }, entry.log.map((item) => changeItem(item))) : null,
+          h("details", { class: "hunks" }, h("summary", {}, "The lines that change"), hunksView(entry.original || "", text)),
+        ),
+      );
+    }
+    const notes = [];
+    if (baseline) notes.push("The homepage, Programming or Gallery changed: Publish refreshes their screenshot baselines on GitHub first.");
+    if (flow.state.pr) notes.push("The pull request is open, so its checks run again on this save (about 19 minutes of Windows Actions time).");
+    else notes.push("Saving commits to the edits branch only. Nothing runs on GitHub until you publish.");
+    if (siteBlocking.length || results.some((result) => result.findings.some((finding) => finding.level === "block"))) {
+      notes.unshift("Fix the items marked “Must fix” first: the site's own checks would fail on them.");
+    }
+    return h("div", { class: "save-body" }, notes.map((note) => h("p", { class: "notice" }, note)), sections);
+  }
+
+  function changeItem(item) {
+    if (item.before === null) return h("li", { class: "change" }, h("span", { class: "change-label" }, item.label));
+    const runs = trimEqualRuns(wordDiff(item.before, item.after));
+    return h(
+      "li",
+      { class: "change" },
+      h("span", { class: "change-label" }, item.label),
+      h("span", { class: "change-words" }, runs.map((run) => h("span", { class: `word word--${run.type}` }, `${run.text} `))),
+    );
+  }
+
+  function hunksView(before, after) {
+    const hunks = lineHunks(before, after, 2);
+    if (!hunks.length) return h("p", { class: "small" }, "No line changes.");
+    return h(
+      "div",
+      { class: "hunk-list" },
+      hunks.map((hunk) =>
+        h(
+          "pre",
+          { class: "hunk" },
+          h("span", { class: "hunk-header" }, `@@ line ${hunk.newStart} @@\n`),
+          hunk.rows.map((row) => h("span", { class: `hunk-row hunk-row--${row.type === "+" ? "add" : row.type === "-" ? "remove" : "same"}` }, `${row.type} ${row.text}\n`)),
+        ),
+      ),
+    );
+  }
+
+  async function doSave(dirty) {
+    const changes = dirty.map((entry) => ({
+      entry,
+      path: entry.path,
+      text: entry.kind === "markdown" ? normaliseMarkdown(entry.working) : entry.working,
+      loadedSha: entry.isNew ? null : entry.loadedSha,
+    }));
+    try {
+      const { files } = await flow.save(
+        changes.map(({ path, text, loadedSha }) => ({ path, text, loadedSha })),
+        commitMessage(changes.map((change) => change.path)),
+      );
+      for (const { entry, text } of changes) {
+        entry.loadedSha = files.get(entry.path);
+        entry.original = text;
+        entry.working = text;
+        entry.isNew = false;
+        if (entry.kind === "page") entry.originalModel = entry.model;
+        entry.undo = [];
+        entry.log = [];
+        entry.stale = null;
+        store.remove(entry.path);
+      }
+      generation += 1;
+      toast(flow.state.notice || "Saved.", "success");
+      const entry = current();
+      if (entry && entry.kind === "page") preview.setChangedKeys([]);
+      if (entry && entry.kind === "markdown") $("markdown-editor").value = entry.working;
+      renderFileList();
+      renderPanel();
+      renderTopbar();
+    } catch (error) {
+      if (error instanceof SaveConflictError) await resolveConflict(error, dirty);
+      else if (error instanceof SignedOutError) onSignedOut(error.message);
+      else toast(describeError(error, target), "error");
+    }
+  }
+
+  async function resolveConflict(error, dirty) {
+    const choice = await openDialog($("confirm-dialog"), {
+      title: "Changed on GitHub",
+      body: h(
+        "div",
+        {},
+        h("p", {}, `${error.conflicts.join(", ")} changed on GitHub since this tab loaded ${error.conflicts.length === 1 ? "it" : "them"} (another device, or a Claude session).`),
+        h("p", {}, "Reload drops your unsaved edits to those files and loads GitHub's version. Your other files keep their edits."),
+      ),
+      actions: [
+        { label: "Cancel", value: null },
+        dirty.length > error.conflicts.length ? { label: "Save the other files", value: "others" } : null,
+        { label: "Reload those files", value: "reload", kind: "danger" },
+      ].filter(Boolean),
+    });
+    if (choice === "reload") {
+      for (const path of error.conflicts) store.remove(path);
+      await reload();
+    } else if (choice === "others") {
+      await doSave(dirty.filter((entry) => !error.conflicts.includes(entry.path)));
+    }
+  }
+
+  // ---- Publish -----------------------------------------------------------------------
+
+  async function openPublish() {
+    preview.finishEditing();
+    syncMarkdown();
+    if (dirtyEntries().length) {
+      toast("Save your changes before publishing.", "warning");
+      return;
+    }
+    publishDialogOpen = true;
+    renderPublishDialog();
+    const dialog = $("publish-dialog");
+    dialog.oncancel = () => {
+      publishDialogOpen = false;
+    };
+    dialog.onclose = () => {
+      publishDialogOpen = false;
+    };
+    if (!dialog.open) dialog.showModal();
+    if (flow.state.pr && !flow.state.busy) flow.refreshChecks().catch((error) => toast(describeError(error, target), "error"));
+  }
+
+  async function runFlow(action) {
+    try {
+      await action();
+      if (flow.state.phase === "published") await afterPublish();
+    } catch (error) {
+      if (error instanceof SignedOutError) onSignedOut(error.message);
+      else toast(describeError(error, target), "error");
+    } finally {
+      if (publishDialogOpen) renderPublishDialog();
+    }
+  }
+
+  async function afterPublish() {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, attempt ? DEPLOY_POLL_MS : 2_000));
+      const deploy = await flow.refreshDeploy().catch(() => null);
+      if (deploy && deploy.status === "completed") break;
+    }
+    await reload();
+  }
+
+  function renderPublishDialog() {
+    const dialog = $("publish-dialog");
+    const state = flow.state;
+    const pr = state.pr;
+    const captured = state.changedPaths.some((path) => target.visualBaselinePages.includes(path));
+    const stepState = (done, active) => (done ? "done" : active ? "active" : "todo");
+    const icons = { passed: "✓", failed: "✗", running: "…", waiting: "·" };
+    const steps = [];
+    if (captured) {
+      const run = state.baselineRun;
+      steps.push(
+        h(
+          "li",
+          { class: `step step--${stepState(Boolean(run && run.status === "completed"), state.phase === "baselines")}` },
+          h("span", { class: "step-title" }, "Screenshot baselines"),
+          h("span", { class: "small" }, run ? `${run.status}${run.conclusion ? `: ${run.conclusion}` : ""}` : "Updated before the pull request opens (about four minutes)."),
+          run && run.url ? externalLink(run.url, "Run on GitHub") : null,
+          state.changedImages.length ? h("ul", { class: "small" }, state.changedImages.map((image) => h("li", {}, image.url ? externalLink(image.url, image.path.split("/").pop()) : image.path))) : null,
+        ),
+      );
+    }
+    steps.push(
+      h(
+        "li",
+        { class: `step step--${stepState(Boolean(pr) || state.phase === "published", state.phase === "opening-pr")}` },
+        h("span", { class: "step-title" }, "Pull request"),
+        pr ? externalLink(pr.html_url || `https://github.com/${target.owner}/${target.repo}/pull/${pr.number}`, `#${pr.number} ${pr.title || ""}`) : h("span", { class: "small" }, "Opens with the changes on edits."),
+      ),
+    );
+    steps.push(
+      h(
+        "li",
+        { class: `step step--${stepState(state.phase === "publishable" || state.phase === "published", state.phase === "checking")}` },
+        h("span", { class: "step-title" }, "Checks"),
+        state.checks.length
+          ? h("ul", { class: "check-list" }, state.checks.map((check) => h("li", { class: `check check--${check.state}` }, h("span", { class: "check-icon", "aria-hidden": "true" }, icons[check.state]), check.url ? externalLink(check.url, check.name) : check.name, h("span", { class: "small" }, ` ${check.state}`))))
+          : h("span", { class: "small" }, pr ? "Waiting for GitHub Actions to start." : "Run on the pull request (about fifteen minutes)."),
+      ),
+    );
+    steps.push(
+      h(
+        "li",
+        { class: `step step--${stepState(state.phase === "published", state.phase === "publishing")}` },
+        h("span", { class: "step-title" }, "Merge and publish"),
+        h("span", { class: "small" }, state.phase === "published" ? state.notice : `A merge commit into main, then ${new URL(target.assets).host} updates in about a minute.`),
+        state.deploy ? h("span", { class: "small" }, ` Deploy: ${state.deploy.status}${state.deploy.conclusion ? ` (${state.deploy.conclusion})` : ""}.`) : null,
+      ),
+    );
+
+    const busy = state.busy;
+    const actions = [button("Close", () => dialog.close(), { kind: "quiet" })];
+    if (!pr && state.phase !== "published") {
+      actions.push(button("Publish", () => runFlow(() => flow.publish()), { kind: "primary", disabled: busy || state.aheadBy === 0 }));
+    }
+    if (pr) actions.push(button("Refresh", () => runFlow(() => flow.refreshChecks()), { disabled: busy }));
+    if (pr && state.behindBy > 0) actions.push(button("Update from main", () => runFlow(() => flow.updateFromMain()), { disabled: busy }));
+    if (state.canRefreshScreenshots) actions.push(button("Refresh screenshots", () => runFlow(() => flow.refreshScreenshots()), { disabled: busy }));
+    if (pr && state.canStartChecks && state.phase === "checking") actions.push(button("Start checks", () => runFlow(() => flow.startChecks()), { disabled: busy }));
+    if (pr) actions.push(button("Merge", () => runFlow(() => flow.merge()), { kind: "primary", disabled: busy || state.phase !== "publishable" }));
+
+    const summary = state.changedPaths.length
+      ? h("p", {}, `${state.changedPaths.length} ${state.changedPaths.length === 1 ? "file differs" : "files differ"} from main: `, state.changedPaths.map((path, index) => [index ? ", " : "", h("code", {}, path)]))
+      : h("p", {}, state.phase === "published" ? "" : "The edits branch matches main: nothing to publish.");
+    dialog.setAttribute("aria-labelledby", "publish-dialog-title");
+    dialog.replaceChildren(
+      h(
+        "div",
+        { class: "dialog-inner" },
+        h(
+          "header",
+          { class: "dialog-header" },
+          h("h2", { id: "publish-dialog-title", class: "dialog-title" }, "Publish"),
+          h("button", { type: "button", class: "button button--quiet dialog-close", "aria-label": "Close", onClick: () => dialog.close() }, "×"),
+        ),
+        h(
+          "div",
+          { class: "dialog-body" },
+          summary,
+          state.notice ? h("p", { class: `notice${state.phase === "attention" ? " notice--warning" : ""}`, role: "status" }, state.notice) : null,
+          state.error ? h("p", { class: "notice notice--error", role: "alert" }, describeError(state.error, target)) : null,
+          h("ol", { class: "steps" }, steps),
+          h("p", { class: "small" }, "Each publish runs the site's checks on the pull request and again on main after the merge: about 40 minutes of Windows Actions time, plus about 4 when screenshots are refreshed."),
+        ),
+        h("footer", { class: "dialog-actions" }, actions),
+      ),
+    );
+  }
+
+  // ---- Reload ------------------------------------------------------------------------
+
+  async function reload() {
+    try {
+      const { files } = await flow.load();
+      syncEntries(files);
+      renderFileList();
+      await open(currentPath && entries.has(currentPath) ? currentPath : firstPagePath());
+      prefetchAll().catch(() => {});
+    } catch (error) {
+      if (error instanceof SignedOutError) onSignedOut(error.message);
+      else toast(describeError(error, target), "error");
+    }
+  }
+
+  function startPolling() {
+    clearInterval(pollTimer);
+    pollTimer = setInterval(() => {
+      if (document.visibilityState !== "visible" || flow.state.busy || !flow.state.pr) return;
+      flow.refreshChecks().catch((error) => {
+        if (error instanceof SignedOutError) onSignedOut(error.message);
+      });
+    }, POLL_MS);
+  }
+
+  // ---- Drawing -----------------------------------------------------------------------
+
+  function setStatus(text) {
+    $("status-line").textContent = text;
+  }
+
+  function stageMessage(text, tone = "info") {
+    const box = $("stage-message");
+    box.replaceChildren();
+    if (text) box.append(h("p", { class: tone === "info" ? "notice" : `notice notice--${tone}` }, text));
+  }
+
+  let toastTimer = null;
+  function toast(text, tone = "info") {
+    let element = $("toast");
+    if (!element) {
+      element = h("div", { id: "toast", class: "toast", role: "status", "aria-live": "polite" });
+      document.body.append(element);
+    }
+    element.className = `toast toast--${tone}`;
+    element.textContent = text;
+    element.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      element.hidden = true;
+    }, tone === "error" ? 12_000 : 5_000);
+  }
+
+  function showRejected(error) {
+    openDialog($("confirm-dialog"), {
+      title: "That change couldn't be saved exactly",
+      body: h(
+        "div",
+        {},
+        h("p", {}, error.message),
+        error.typedText ? h("p", {}, "What you typed, so you can copy it:") : null,
+        error.typedText ? h("textarea", { class: "copy-box", readonly: true, rows: 5 }, error.typedText) : null,
+      ),
+      actions: [{ label: "OK", value: null, kind: "primary" }],
+    });
+  }
+
+  function renderTopbar() {
+    const dirty = dirtyEntries();
+    const count = dirty.length + (typing && !dirty.some((entry) => entry.path === currentPath) ? 1 : 0);
+    const state = flow.state;
+    const save = $("save-button");
+    save.textContent = count ? `Save (${count})` : "Save";
+    save.disabled = !count || state.busy;
+    const publish = $("publish-button");
+    publish.disabled = count > 0 || state.busy || (!state.pr && state.aheadBy === 0 && state.phase !== "published");
+    const entry = current();
+    $("undo-button").disabled = !entry || !entry.undo.length;
+    $("discard-button").disabled = !entry || !isDirty(entry);
+
+    let status;
+    if (state.busy) status = state.notice || "Working on GitHub…";
+    else if (count) status = `${count} ${count === 1 ? "file has" : "files have"} unsaved changes.`;
+    else if (state.phase === "published") {
+      status = state.deploy && state.deploy.status === "completed" ? `Published: ${new URL(target.assets).host} is up to date.` : state.notice;
+    }
+    else if (state.pr) {
+      const done = state.checks.filter((check) => check.state === "passed" || check.state === "failed").length;
+      status = state.phase === "publishable"
+        ? `Pull request #${state.pr.number} is ready to merge.`
+        : state.phase === "attention"
+          ? `Pull request #${state.pr.number}: ${state.notice}`
+          : `Pull request #${state.pr.number}: checks running (${done} of ${target.requiredChecks.length} done).`;
+    } else if (state.aheadBy > 0) status = `Saved on edits: ${state.changedPaths.length} ${state.changedPaths.length === 1 ? "file differs" : "files differ"} from main. Publish when ready.`;
+    else status = state.notice || `Editing ${target.owner}/${target.repo}.`;
+    setStatus(status);
+  }
+
+  function renderFileList() {
+    const lists = { page: $("page-list"), record: $("record-list"), blog: $("blog-source-list") };
+    for (const list of Object.values(lists)) list.replaceChildren();
+    for (const entry of entries.values()) {
+      const list = entry.kind === "page" ? lists.page : entry.path === target.markdown.record ? lists.record : lists.blog;
+      const badges = [];
+      if (isDirty(entry)) badges.push(h("span", { class: "file-badge file-badge--changed", title: "Unsaved changes" }, "edited"));
+      if (entry.model && entry.model.readOnly) badges.push(h("span", { class: "file-badge file-badge--locked", title: entry.model.readOnly }, "read-only"));
+      else if (entry.model && entry.model.drafts.length) badges.push(h("span", { class: "file-badge file-badge--drafts", title: `${entry.model.drafts.length} drafts` }, String(entry.model.drafts.length)));
+      if (entry.status === "error") badges.push(h("span", { class: "file-badge file-badge--locked" }, "error"));
+      list.append(
+        h(
+          "li",
+          {},
+          h(
+            "button",
+            {
+              type: "button",
+              class: "file-link",
+              "aria-current": entry.path === currentPath ? "page" : null,
+              title: entry.path,
+              onClick: () => open(entry.path),
+            },
+            h("span", { class: "file-link-label" }, entry.label),
+            badges,
+          ),
+        ),
+      );
+    }
+    if (!lists.record.children.length) lists.record.append(h("li", { class: "small" }, "No record file."));
+    if (!lists.blog.children.length) lists.blog.append(h("li", { class: "small" }, "No blog sources yet."));
+  }
+
+  function renderStageBar() {
+    const entry = current();
+    if (!entry) return;
+    $("stage-title").textContent = entry.label;
+    $("stage-path").textContent = entry.path;
+    const live = $("live-link");
+    if (entry.kind === "page" && entry.model && entry.model.permalink) {
+      live.hidden = false;
+      live.href = liveUrl(target, entry.model.permalink);
+    } else {
+      live.hidden = true;
+    }
+    $("width-toggle").hidden = entry.kind !== "page";
+  }
+
+  // ---- The side panel ------------------------------------------------------------------
+
+  function renderPanel() {
+    const panel = $("panel");
+    const entry = current();
+    panel.replaceChildren();
+    if (!entry || entry.status !== "ready") return;
+    if (entry.kind === "markdown") {
+      panel.append(markdownPanel(entry));
+      return;
+    }
+    const model = entry.model;
+    const parts = [];
+    if (entry.stale) parts.push(staleNotice(entry));
+    if (model.readOnly) parts.push(h("p", { class: "notice notice--warning" }, "Read-only: ", model.readOnly));
+    const kind = selection && selection.kind;
+    if (kind === "block" || kind === "link") parts.push(blockPanel(entry, selection.kind === "link" ? selection.blockKey : selection.key));
+    if (kind === "link") parts.push(linkPanel(entry, selection.key));
+    if (kind === "image") parts.push(imagePanel(entry, selection.key));
+    if (kind === "locked") parts.push(h("section", { class: "panel-section" }, h("h2", {}, "Locked"), h("p", {}, model.lockReasons.get(selection.key) || "This part can't be edited here.")));
+    if (kind === "outside") parts.push(h("section", { class: "panel-section" }, h("h2", {}, "Header and footer"), h("p", {}, "The header, navigation and footer are the same on every page. Change them in a Claude session.")));
+    parts.push(pagePanel(entry));
+    panel.append(...parts.filter(Boolean));
+  }
+
+  function staleNotice(entry) {
+    const view = () =>
+      openDialog($("save-dialog"), {
+        title: "Your earlier edits",
+        body: h("div", {}, h("p", {}, "These unsaved edits were made to an older version of the page. Copy what you need, then discard them."), hunksView(entry.stale.original || "", entry.stale.working)),
+        actions: [{ label: "Close", value: null }],
+      });
+    return h(
+      "section",
+      { class: "panel-section notice notice--warning" },
+      h("p", {}, "This page changed on GitHub after your unsaved edits to it, so they weren't applied."),
+      h("div", { class: "button-row" }, button("Show them", view, { small: true }), button("Discard them", () => {
+        store.remove(entry.path);
+        entry.stale = null;
+        renderPanel();
+      }, { small: true, kind: "quiet" })),
+    );
+  }
+
+  function blockPanel(entry, key) {
+    const model = entry.model;
+    const block = key ? model.blockByKey.get(key) : null;
+    if (!block) return null;
+    const section = h("section", { class: "panel-section" });
+    const name = blockName(model, key);
+    section.append(h("h2", {}, block.lock ? `${name} (locked)` : name));
+    if (block.lock) {
+      section.append(h("p", {}, block.lock));
+      return section;
+    }
+    const drafts = model.drafts.filter((item) => item.key === key || item.blockKey === key);
+    for (const draft of drafts) {
+      section.append(
+        h(
+          "div",
+          { class: "panel-row" },
+          h("span", { class: `tag tag--${draft.kind}` }, draft.kind === "check" ? "To check" : "To write"),
+          button(draft.kind === "check" ? "Approve" : "Done", () => runDraft(draft.key), { small: true }),
+        ),
+      );
+    }
+    if (block.shared) section.append(h("p", { class: "small" }, "This call to action is repeated on Home, Programming, Volunteering and Contact."));
+    const text = blockText(model, key);
+    if (/Year 1[0-3]\b/.test(text)) {
+      const reviewed = [block.node, ...ancestorsWithin(block.node, model.main)].find((node) => attribute(node, "data-review"));
+      section.append(h("p", { class: "small" }, reviewed ? `Mentions a school year; re-read after ${attribute(reviewed, "data-review")}.` : "Mentions a school year: it needs a data-review date."));
+    }
+    const row = h("div", { class: "button-row" });
+    if (block.structuralKey) {
+      const what = model.nodeOf.get(block.structuralKey).tagName === "li" ? "item" : "paragraph";
+      row.append(button(`Add ${what} after`, () => runAddAfter(block.structuralKey), { small: true }));
+      row.append(button(`Remove ${what}`, () => runRemove(block.structuralKey), { small: true, kind: "danger" }));
+    }
+    if (canRevert(entry, key)) row.append(button("Revert this block", () => revertBlock(key), { small: true, kind: "quiet" }));
+    if (row.children.length) section.append(row);
+    const enclosing = ancestorsWithin(block.node, model.main).find((node) => node.tagName === "a" && attribute(node, "href") !== null);
+    if (enclosing) section.append(hrefEditor(entry, model.keyOf.get(enclosing), "This block is inside a link to"));
+    section.append(h("p", { class: "small hint" }, "Type to edit. Enter or clicking elsewhere finishes the block."));
+    return section;
+  }
+
+  function ancestorsWithin(node, stop) {
+    const list = [];
+    for (let item = node.parentNode; item && item !== stop; item = item.parentNode) list.push(item);
+    return list;
+  }
+
+  function hrefEditor(entry, key, label = "Goes to") {
+    const node = entry.model.nodeOf.get(key);
+    const input = h("input", { type: "text", class: "text-input", value: attribute(node, "href") || "", "aria-label": "Link address", spellcheck: "false" });
+    const apply = () => {
+      const value = input.value.trim();
+      if (value && value !== attribute(node, "href")) applyOperation("Changed a link", (model) => setAttribute(model, key, "href", value));
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") apply();
+    });
+    const newTab = attribute(node, "target") === "_blank";
+    return h(
+      "div",
+      { class: "field" },
+      h("label", { class: "field-label" }, label, input),
+      h("div", { class: "button-row" }, button("Apply", apply, { small: true })),
+      h("p", { class: "small" }, newTab ? "Opens in a new tab." : "Opens in the same tab."),
+    );
+  }
+
+  function linkPanel(entry, key) {
+    const node = entry.model.nodeOf.get(key);
+    if (!node) return null;
+    const section = h("section", { class: "panel-section" }, h("h2", {}, "Link"));
+    section.append(h("p", {}, "Text: ", h("strong", {}, collapse(textOf(node)) || "(no text)")));
+    if (entry.model.readOnly) return section;
+    section.append(hrefEditor(entry, key));
+    const href = attribute(node, "href") || "";
+    const external = /^[a-z]+:/i.test(href) || /\.pdf($|[?#])/i.test(href);
+    const newTab = attribute(node, "target") === "_blank";
+    if (external && !newTab) {
+      section.append(button("Open in a new tab", () => applyOperation("Made a link open in a new tab", (model) => setAttribute(setAttribute(model, key, "target", "_blank"), key, "rel", "noopener noreferrer")), { small: true }));
+    }
+    if (!external && newTab) {
+      section.append(button("Open in the same tab", () => applyOperation("Made a link open in the same tab", (model) => removeAttribute(removeAttribute(model, key, "target"), key, "rel")), { small: true }));
+    }
+    return section;
+  }
+
+  function imagePanel(entry, key) {
+    const model = entry.model;
+    const image = model.images.find((item) => item.key === key);
+    if (!image) return null;
+    const section = h("section", { class: "panel-section" }, h("h2", {}, image.gallery ? "Gallery photo" : "Image"));
+    const field = (label, value, name, targetKey, multiline = false) => {
+      const input = multiline
+        ? h("textarea", { class: "text-input", rows: 3, "aria-label": label }, value || "")
+        : h("input", { type: "text", class: "text-input", value: value || "", "aria-label": label });
+      const apply = () => {
+        const next = input.value.trim();
+        if (next !== (value || "")) applyOperation(`Changed ${label.toLowerCase()}`, (current) => setAttribute(current, targetKey, name, next));
+      };
+      return h("div", { class: "field" }, h("label", { class: "field-label" }, label, input), model.readOnly ? null : h("div", { class: "button-row" }, button("Apply", apply, { small: true })));
+    };
+    section.append(field("Alt text", attribute(image.node, "alt"), "alt", key, true));
+    if (image.gallery) {
+      const buttonNode = model.nodeOf.get(image.gallery.buttonKey);
+      const caption = image.gallery.captionKey ? collapse(textOf(model.nodeOf.get(image.gallery.captionKey))) : "";
+      if (attribute(buttonNode, "data-caption") !== null) section.append(field("Expanded caption", attribute(buttonNode, "data-caption"), "data-caption", image.gallery.buttonKey));
+      section.append(field("Button label", attribute(buttonNode, "aria-label"), "aria-label", image.gallery.buttonKey));
+      section.append(h("p", { class: "small" }, "Visible caption: ", h("strong", {}, caption || "(none)"), ". Edit it on the page."));
+    }
+    return section;
+  }
+
+  function pagePanel(entry) {
+    const model = entry.model;
+    const section = h("section", { class: "panel-section panel-section--page" }, h("h2", {}, entry.label));
+    if (model.now && !model.readOnly) {
+      const month = thisMonth();
+      const input = h("input", { type: "month", class: "text-input", value: month, "aria-label": "Month" });
+      section.append(
+        h(
+          "div",
+          { class: "field" },
+          h("p", { class: "field-label" }, "Now section: ", h("strong", {}, updatedLabel(model.now.updated))),
+          h("div", { class: "button-row" }, input, button("Set Updated", () => applyOperation("Updated the Now section's month", (current) => setNowUpdated(current, input.value || month), { flashKey: model.now.lineKey }), { small: true })),
+          h("p", { class: "small" }, "Changes data-updated and the visible “Updated Month Year” line together."),
+        ),
+      );
+    }
+    if (model.drafts.length) {
+      section.append(h("h3", {}, `Drafts on this page (${model.drafts.length})`));
+      section.append(
+        h(
+          "ul",
+          { class: "draft-list" },
+          model.drafts.map((draft) =>
+            h(
+              "li",
+              { class: "draft-item" },
+              h("span", { class: `tag tag--${draft.kind}` }, draft.kind === "check" ? "Check" : "Write"),
+              h("button", { type: "button", class: "draft-go", onClick: () => goTo(entry.path, draft.blockKey || draft.key) }, collapse(textOf(draft.node)).slice(0, 90) || "(empty)"),
+              model.readOnly ? null : button(draft.kind === "check" ? "Approve" : "Done", () => runDraft(draft.key), { small: true }),
+            ),
+          ),
+        ),
+      );
+    } else if (!model.readOnly) {
+      section.append(h("p", { class: "small" }, "No drafts on this page."));
+    }
+    if (!model.readOnly) {
+      section.append(h("p", { class: "small hint" }, "Click any text on the page to edit it. Links and images open here when clicked. Save commits every changed file at once."));
+    }
+    return section;
+  }
+
+  function markdownPanel(entry) {
+    const section = h("section", { class: "panel-section" }, h("h2", {}, entry.label));
+    if (entry.path === target.markdown.record) {
+      section.append(h("p", {}, "Your private record. Not published: the site's _config.yml excludes docs/."));
+      section.append(h("p", { class: "small" }, "The “### slug” headings are what the pages' data-record attributes point at; renaming one would fail the site's checks, and Save will say so."));
+    } else {
+      section.append(h("p", {}, "A blog post source. Not published; a Claude session turns it into the post page."));
+      section.append(h("p", { class: "small" }, "Start with the month, year and age, then “# Title” and a lede. Add a “##” subheading every 300 to 400 words and end with a Related list."));
+    }
+    if (entry.isNew) section.append(h("p", { class: "notice" }, "New file: it's created on GitHub when you save."));
+    return section;
+  }
+
+  function thisMonth() {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  }
+
+  async function goTo(path, key) {
+    if (currentPath !== path) await open(path);
+    const entry = current();
+    if (!entry || entry.kind !== "page" || !entry.model.nodeOf.has(key)) return;
+    const kind = entry.model.blockByKey.has(key) ? "block" : "none";
+    preview.select({ kind, key });
+  }
+
+  async function newPost() {
+    syncMarkdown();
+    const title = await promptText($("confirm-dialog"), {
+      title: "New post source",
+      label: "Post title",
+      confirm: "Create",
+      hint: "The file goes in docs/blog-sources/ and is created on GitHub when you save.",
+    });
+    if (!title) return;
+    const record = entries.get(target.markdown.record);
+    if (record) await ensureLoaded(record);
+    let created;
+    try {
+      created = newPostSource({
+        title,
+        today: new Date(),
+        recordText: record && record.status === "ready" ? record.working : null,
+        folder: target.markdown.blogSources,
+        existing: [...entries.keys(), ...flow.state.files.keys()],
+      });
+    } catch (error) {
+      toast(error.message, "error");
+      return;
+    }
+    const entry = makeEntry(created.path, "markdown", null);
+    Object.assign(entry, { status: "ready", original: "", working: created.text, isNew: true });
+    entries.set(created.path, entry);
+    persist(entry);
+    renderFileList();
+    await open(created.path);
+  }
+
+  function closeSidebar() {
+    $("sidebar").dataset.open = "false";
+    $("sidebar-toggle").setAttribute("aria-expanded", "false");
+  }
+
+  // ---- Wiring --------------------------------------------------------------------------
+
+  function wireInterface() {
+    $("save-button").onclick = () => startSave();
+    $("publish-button").onclick = () => openPublish();
+    $("undo-button").onclick = () => undo();
+    $("discard-button").onclick = () => discardPage();
+    $("new-post-button").onclick = () => newPost();
+    $("sidebar-toggle").onclick = () => {
+      const sidebar = $("sidebar");
+      const open = sidebar.dataset.open !== "true";
+      sidebar.dataset.open = String(open);
+      $("sidebar-toggle").setAttribute("aria-expanded", String(open));
+    };
+    for (const toggle of $("width-toggle").querySelectorAll("button")) {
+      toggle.onclick = () => {
+        for (const other of $("width-toggle").querySelectorAll("button")) other.setAttribute("aria-pressed", String(other === toggle));
+        preview.setWidth(toggle.dataset.width);
+      };
+    }
+    const editor = $("markdown-editor");
+    let markdownTimer = null;
+    editor.oninput = () => {
+      const entry = current();
+      if (!entry || entry.kind !== "markdown") return;
+      clearTimeout(markdownTimer);
+      entry.working = editor.value;
+      renderTopbar();
+      markdownTimer = setTimeout(() => {
+        persist(entry);
+        renderFileList();
+        renderTopbar();
+      }, 400);
+    };
+    document.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        startSave();
+      }
+    });
+    window.addEventListener("beforeunload", (event) => {
+      preview.finishEditing();
+      syncMarkdown();
+      if (dirtyEntries().length) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && flow.state.pr && !flow.state.busy) flow.refreshChecks().catch(() => {});
+    });
+  }
+
+  async function start() {
+    wireInterface();
+    $("account-summary").textContent = user.login;
+    $("account-name").textContent = `Signed in as ${user.login}`;
+    const host = new URL(target.assets).host;
+    $("site-link").href = `${target.assets}/`;
+    $("site-link").textContent = host;
+    setStatus("Loading the site from GitHub…");
+    stageMessage(`Loading ${target.owner}/${target.repo}…`);
+    try {
+      const { files } = await flow.load();
+      syncEntries(files);
+      renderFileList();
+      let remembered = null;
+      try {
+        remembered = sessionStorage.getItem("siteEditor.currentPage");
+      } catch {
+        remembered = null;
+      }
+      await open(remembered && entries.has(remembered) ? remembered : firstPagePath());
+      renderTopbar();
+      prefetchAll().catch(() => {});
+      startPolling();
+      if (flow.state.pr) flow.refreshChecks().catch(() => {});
+    } catch (error) {
+      if (error instanceof SignedOutError) {
+        onSignedOut(error.message);
+        return;
+      }
+      stageMessage(describeError(error, target), "error");
+      setStatus("");
+    }
+  }
+
+  return {
+    start,
+    flow,
+    preview,
+    entries,
+    open,
+    startSave,
+    stop() {
+      clearInterval(pollTimer);
+    },
+    // Used by tests and the mock's panel.
+    get current() {
+      return current();
+    },
+    toast,
+    months: MONTHS,
+  };
+}

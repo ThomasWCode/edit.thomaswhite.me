@@ -1,9 +1,16 @@
-// Entry point. Wires sign-in, the GitHub client and the interface together.
-import { AuthNetworkError, createAuth, SignedOutError } from "./auth.js";
-import { activeTarget, auth as authOrigins } from "./config.js";
-import { createGitHubClient, GitHubError } from "./github-client.js";
+// Entry point: sign-in, then the editor (app.js).
+//
+// ?mock=1 on a loopback address swaps GitHub and the Worker for an in-memory
+// fake seeded with the test fixtures (dev/mock-session.js); dev/ is never
+// published, so the switch does nothing on edit.thomaswhite.me.
+// ?worker=local signs in through `npm run worker:dev` instead of the deployed Worker.
 
-const $ = (id) => document.getElementById(id);
+import { createApp } from "./app.js";
+import { createAuth } from "./auth.js";
+import { activeTarget, auth as authOrigins } from "./config.js";
+import { $ } from "./dom.js";
+import { createGitHubClient } from "./github-client.js";
+
 const params = new URLSearchParams(location.search);
 const isLoopback = () => ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname);
 
@@ -32,10 +39,6 @@ function showView(view) {
   $("sidebar-toggle").hidden = view !== "editor";
 }
 
-function setStatus(text) {
-  $("status-line").textContent = text;
-}
-
 function showSignIn(auth, message = "", tone = "error") {
   showView("signin");
   const notice = $("signin-message");
@@ -43,108 +46,54 @@ function showSignIn(auth, message = "", tone = "error") {
   notice.hidden = !message;
   notice.className = tone === "info" ? "notice" : `notice notice--${tone}`;
   $("sign-in-button").onclick = () => auth.signIn();
-  setStatus("");
-}
-
-function stageMessage(text, { tone = "info", link = null } = {}) {
-  const box = $("stage-message");
-  box.replaceChildren();
-  if (!text) return;
-  const paragraph = document.createElement("p");
-  paragraph.className = tone === "info" ? "notice" : `notice notice--${tone}`;
-  paragraph.textContent = text;
-  if (link) {
-    paragraph.append(" ");
-    const anchor = document.createElement("a");
-    anchor.href = link.href;
-    anchor.target = "_blank";
-    anchor.rel = "noopener noreferrer";
-    anchor.textContent = link.text;
-    paragraph.append(anchor);
-  }
-  box.append(paragraph);
-}
-
-function describeGitHubError(error, target) {
-  if (error instanceof SignedOutError) return error.message;
-  if (error instanceof AuthNetworkError) return "The sign-in service could not be reached. Your edits are still in this tab.";
-  if (!(error instanceof GitHubError)) return `Something went wrong: ${error.message}`;
-  switch (error.code) {
-    case "network":
-      return "No connection to GitHub. Your edits are still in this tab.";
-    case "not_found":
-      return `The GitHub App cannot see ${target.owner}/${target.repo}. Install “Homepage Site Editor” on it, then reload.`;
-    case "rate_limited":
-      return `GitHub's rate limit was reached. Try again in ${Math.ceil((error.retryAfter || 60) / 60)} minutes.`;
-    default:
-      return `GitHub said: ${error.message}`;
-  }
-}
-
-let signingOut = false;
-
-function wireAccountMenu(auth) {
-  const signOut = async (everywhere) => {
-    $("account").open = false;
-    signingOut = true;
-    const confirmed = await auth.signOut({ everywhere });
-    signingOut = false;
-    if (confirmed) showSignIn(auth, everywhere ? "Signed out on every device." : "Signed out.", "info");
-    else showSignIn(auth, "Signed out here, but GitHub could not be told. If this device is lost, revoke the app under Authorized GitHub Apps.", "warning");
-  };
-  $("sign-out-button").onclick = () => signOut(false);
-  $("sign-out-everywhere-button").onclick = () => signOut(true);
-}
-
-async function openEditor({ auth, client, target, user }) {
-  showView("editor");
-  $("account-summary").textContent = user.login;
-  $("account-name").textContent = `Signed in as ${user.login}`;
-  $("site-link").href = `${target.assets}/`;
-  $("site-link").textContent = new URL(target.assets).host;
-  setStatus(`Editing ${target.owner}/${target.repo}`);
-  stageMessage(`Checking access to ${target.owner}/${target.repo}…`);
-  try {
-    const repository = await client.getRepo();
-    const canWrite = Boolean(repository.permissions && repository.permissions.push);
-    stageMessage(
-      canWrite
-        ? `Connected to ${repository.full_name} (default branch ${repository.default_branch}).`
-        : `Connected to ${repository.full_name}, but without permission to write to it.`,
-      { tone: canWrite ? "info" : "warning" },
-    );
-  } catch (error) {
-    if (error instanceof SignedOutError) {
-      showSignIn(auth, error.message);
-      return;
-    }
-    stageMessage(describeGitHubError(error, target), { tone: "error" });
-  }
+  $("status-line").textContent = "";
 }
 
 async function start() {
   if (framed()) return;
   const target = activeTarget();
-  const workerUrl = isLoopback() && params.get("worker") === "local" ? authOrigins.local : authOrigins.production;
-  const auth = createAuth({
-    workerUrl,
-    storage: localStorage,
-    fetch: (input, init) => window.fetch(input, init),
-    locks: navigator.locks || null,
-    location,
-    history,
-    addEventListener: (type, listener) => window.addEventListener(type, listener),
-  });
-  const client = createGitHubClient({
-    target,
-    fetch: (input, init) => window.fetch(input, init),
-    getAccessToken: (options) => auth.getAccessToken(options),
-  });
+  let auth;
+  let fetchImpl = (input, init) => window.fetch(input, init);
+  let mock = null;
+  if (isLoopback() && params.has("mock")) {
+    const { createMockSession } = await import("../dev/mock-session.js");
+    mock = await createMockSession({ target });
+    auth = mock.auth;
+    fetchImpl = mock.fetch;
+  } else {
+    const workerUrl = isLoopback() && params.get("worker") === "local" ? authOrigins.local : authOrigins.production;
+    auth = createAuth({
+      workerUrl,
+      storage: localStorage,
+      fetch: (input, init) => window.fetch(input, init),
+      locks: navigator.locks || null,
+      location,
+      history,
+      addEventListener: (type, listener) => window.addEventListener(type, listener),
+    });
+  }
+  const client = createGitHubClient({ target, fetch: fetchImpl, getAccessToken: (options) => auth.getAccessToken(options) });
 
-  wireAccountMenu(auth);
+  let app = null;
+  let signingOut = false;
+  const signedOut = (message) => {
+    if (app) app.stop();
+    showSignIn(auth, message, "warning");
+  };
+  const signOut = async (everywhere) => {
+    $("account").open = false;
+    signingOut = true;
+    const confirmed = await auth.signOut({ everywhere });
+    signingOut = false;
+    if (app) app.stop();
+    if (confirmed) showSignIn(auth, everywhere ? "Signed out on every device." : "Signed out.", "info");
+    else showSignIn(auth, "Signed out here, but GitHub could not be told. If this device is lost, revoke the app under Authorized GitHub Apps.", "warning");
+  };
+  $("sign-out-button").onclick = () => signOut(false);
+  $("sign-out-everywhere-button").onclick = () => signOut(true);
   auth.onChange((user) => {
     if (!user && !signingOut && $("app").dataset.view === "editor") {
-      showSignIn(auth, "You’re signed out. Sign in again to carry on; unsaved edits stay in this tab.", "warning");
+      signedOut("You're signed out. Sign in again to carry on; unsaved edits stay in this tab.");
     }
   });
 
@@ -158,7 +107,14 @@ async function start() {
     showSignIn(auth);
     return;
   }
-  await openEditor({ auth, client, target, user });
+  showView("editor");
+  app = createApp({ target, client, user, onSignedOut: signedOut });
+  if (mock) {
+    mock.mountPanel(app);
+    // For poking at the fake from the browser console while developing.
+    window.siteEditorMock = { app, fake: mock.fake };
+  }
+  await app.start();
 }
 
 start();

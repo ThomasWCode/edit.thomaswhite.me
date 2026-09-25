@@ -31,11 +31,22 @@ export function markdownFiles(target, paths) {
   return { record: paths.includes(record) ? record : null, blogSources: sources };
 }
 
-// Pages in a sensible order: the homepage first, then top-level pages, then
-// pages in folders, alphabetically within each group.
-export function sortPages(paths) {
-  const rank = (path) => (path === "index.html" ? 0 : path.includes("/") ? 2 : 1);
-  return [...paths].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+// Pages in the target's order: exact names first, a folder entry ("blog/")
+// placing that folder's other pages alphabetically, then any page not listed,
+// then `last` (the locked files).
+export function sortPages(paths, { order = [], last = [] } = {}) {
+  const rank = (path) => {
+    if (last.includes(path)) return [2, last.indexOf(path)];
+    const exact = order.indexOf(path);
+    if (exact >= 0) return [0, exact];
+    const folder = order.findIndex((item) => item.endsWith("/") && path.startsWith(item));
+    return folder >= 0 ? [0, folder] : [1, 0];
+  };
+  return [...paths].sort((a, b) => {
+    const [groupA, placeA] = rank(a);
+    const [groupB, placeB] = rank(b);
+    return groupA - groupB || placeA - placeB || a.localeCompare(b);
+  });
 }
 
 // A readable label before the page's <title> is known: "physics/magnetic-newtons-cradle.html"

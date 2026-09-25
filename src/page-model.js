@@ -351,6 +351,17 @@ export function blockText(model, key) {
   return collapse(textOf(model.nodeOf.get(key)));
 }
 
+// The page's <title>, for labels.
+export function pageTitle(model) {
+  const stack = [model.document];
+  while (stack.length) {
+    const node = stack.pop();
+    if (node.tagName === "title") return collapse(textOf(node));
+    for (const child of node.childNodes || []) stack.push(child);
+  }
+  return "";
+}
+
 // Line number (1-based) of an element's start tag.
 export function lineOf(node) {
   return node.sourceCodeLocation.startLine;

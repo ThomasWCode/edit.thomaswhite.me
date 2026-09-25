@@ -18,6 +18,23 @@ const shared = {
   visualBaselinePages: ["index.html", "programming.html", "gallery.html"],
   // The CV needs a PDF rebuild; the other three are redirects.
   lockedFiles: ["cv.html", "sport.html", "music&drama.html", "gravatar.html"],
+  // The file list follows the site's navigation; "blog/" places every post
+  // after the Blog index. Other pages follow alphabetically, locked ones last.
+  pageOrder: [
+    "index.html",
+    "programming.html",
+    "physics.html",
+    "physics/",
+    "volunteering.html",
+    "blog/index.html",
+    "blog/",
+    "sport-music-and-drama.html",
+    "gallery.html",
+    "tedx.html",
+    "testimonials.html",
+    "contact.html",
+    "youtube.html",
+  ],
   markdown: { record: "docs/record.md", blogSources: "docs/blog-sources/" },
 };
 

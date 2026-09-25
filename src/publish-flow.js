@@ -191,9 +191,9 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
             saved.set(change.path, blob);
           }
           set({ head: sha, onBranch: true, files });
+          await readBranchState();
           const pr = state.pr || (await client.findOpenPr());
           if (pr) {
-            await readBranchState();
             await client.updatePrBody(pr.number, prBody(state.changedPaths));
             set({ pr, phase: "checking", checks: [], checkedSha: null, notice: "Saved. The pull request is open, so its checks run again on this commit." });
           } else {
@@ -331,6 +331,9 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
         mergedSha: result.sha,
         mergedAt: now(),
         onBranch: false,
+        aheadBy: 0,
+        behindBy: 0,
+        changedPaths: [],
         checks: [],
         notice: `Merged. ${new URL(target.assets).host} updates in about a minute.`,
       });
