@@ -1,7 +1,7 @@
 # edit.thomaswhite.me
 
-A private editor for `thomaswhite.me`: open the page, click text, change it, Save, Publish.
+A private editor for `thomaswhite.me`: open the page as it looks, click text and change it, Save (one commit on an `edits` branch), Publish (the pull request, CI, merge).
 
-This README is a stub. The full one, the setup walkthrough (`docs/setup.md`) and the
-architecture notes (`docs/how-it-works.md`) are written in the last stage of the build
-described in `docs/plan.md`.
+**Status: planned, not built.** The approved plan is [`docs/plan.md`](docs/plan.md); the original sketch is [`docs/edit-subdomain-plan.md`](docs/edit-subdomain-plan.md). The repository holds the scaffold, the vendored HTML parser and the test fixtures described in [`AGENTS.md`](AGENTS.md).
+
+The editor targets the preview site (`new.thomaswhite.me`, repository `ThomasWCode/ThomasWCode.github.io-revised`) until the large content update is merged into the main site, then a config switch points it at `thomaswhite.me`.

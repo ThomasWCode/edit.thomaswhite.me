@@ -2,6 +2,12 @@
 
 Approved on 25 September 2026 after five clarifying questions. This copy is the working reference for the build; `docs/how-it-works.md` describes what was actually built where it differs.
 
+## Status
+
+- 25 September 2026: plan approved. Stage 0 (repository scaffold, pinned dependencies, LF fixtures) and stage 1 (the vendored parse5 bundle with its bundling script) are committed locally. Nothing else is built; `src/`, `tests/unit` and `worker/` are empty. Implementation resumes from stage 2 of "Implementation stages" below, after the day-1 spikes if the UI is next.
+- Nothing has been pushed. The preview repository's doc changes are on a local branch `editor-docs` there, unpushed.
+- Tom's setup steps (section "Setup Tom does") have not started; step A1 (the Cloudflare subdomain) and A2 (the GitHub App) are the first things the next session will ask for, because the Worker URL and client id go into `wrangler.toml` and `src/config.js`.
+
 ## Context
 
 `thomaswhite.me` is a hand-written static site on GitHub Pages. A large content update lives in the private preview repo `ThomasWCode/ThomasWCode.github.io-revised`, published at `new.thomaswhite.me`, with 77 draft placeholders Tom still has to write (`npm run list:drafts`). Writing them today means editing HTML by hand in a Claude session.
