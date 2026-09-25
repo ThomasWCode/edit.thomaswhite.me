@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' https://new.thomaswhite.me https://thomaswhite.me; font-src https://new.thomaswhite.me https://thomaswhite.me; img-src 'self' data: https://new.thomaswhite.me https://thomaswhite.me https://i.ytimg.com; media-src https://new.thomaswhite.me https://thomaswhite.me; connect-src https://api.github.com https://site-editor-auth.thomaswhite.workers.dev; frame-src 'self'; base-uri https://new.thomaswhite.me https://thomaswhite.me; form-action 'none'; object-src 'none'"
+    />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Site editor</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="editor.css" />
+    <script type="module" src="src/editor.js"></script>
+  </head>
+  <body>
+    <div class="app" id="app" data-view="starting">
+      <header class="topbar">
+        <div class="topbar-title">
+          <button type="button" class="button button--quiet sidebar-toggle" id="sidebar-toggle" aria-controls="sidebar" aria-expanded="false" hidden>Pages</button>
+          <span class="topbar-name">Site editor</span>
+          <a class="topbar-site" id="site-link" href="https://new.thomaswhite.me/" target="_blank" rel="noopener noreferrer">new.thomaswhite.me</a>
+        </div>
+        <p class="topbar-status" id="status-line" role="status" aria-live="polite"></p>
+        <div class="topbar-actions" id="topbar-actions" hidden>
+          <button type="button" class="button" id="undo-button" disabled>Undo</button>
+          <button type="button" class="button button--primary" id="save-button" disabled>Save</button>
+          <button type="button" class="button" id="publish-button" disabled>Publish</button>
+          <details class="account" id="account">
+            <summary class="button button--quiet" id="account-summary">Account</summary>
+            <div class="account-menu">
+              <p class="account-name" id="account-name"></p>
+              <button type="button" class="button button--quiet" id="sign-out-button">Sign out</button>
+              <button type="button" class="button button--quiet" id="sign-out-everywhere-button">Sign out everywhere</button>
+              <p class="small">
+                Lost a device? Revoke “Homepage Site Editor” under
+                <a href="https://github.com/settings/apps/authorizations" target="_blank" rel="noopener noreferrer">Authorized GitHub Apps</a>.
+              </p>
+            </div>
+          </details>
+        </div>
+      </header>
+
+      <section class="signin" id="signin-view" hidden>
+        <div class="signin-card">
+          <p class="eyebrow">thomaswhite.me</p>
+          <h1>Site editor</h1>
+          <p>Change the site’s text where it sits on the page, save it to GitHub, then publish it.</p>
+          <p class="notice" id="signin-message" role="alert" hidden></p>
+          <button type="button" class="button button--primary button--large" id="sign-in-button">Sign in with GitHub</button>
+          <p class="small">Only the site’s owner can sign in.</p>
+        </div>
+      </section>
+
+      <div class="workspace" id="editor-view" hidden>
+        <nav class="sidebar" id="sidebar" aria-label="Files">
+          <h2 class="sidebar-heading">Pages</h2>
+          <ul class="file-list" id="page-list"></ul>
+          <h2 class="sidebar-heading">Record</h2>
+          <ul class="file-list" id="record-list"></ul>
+          <h2 class="sidebar-heading">Blog sources</h2>
+          <ul class="file-list" id="blog-source-list"></ul>
+          <button type="button" class="button button--quiet button--small" id="new-post-button">New post source</button>
+        </nav>
+
+        <main class="stage" id="stage">
+          <div class="stage-bar">
+            <h1 class="stage-title" id="stage-title"></h1>
+            <p class="stage-path" id="stage-path"></p>
+            <div class="stage-tools">
+              <div class="segmented" role="group" aria-label="Preview width" id="width-toggle">
+                <button type="button" class="button button--small" data-width="full" aria-pressed="true">Desktop</button>
+                <button type="button" class="button button--small" data-width="phone" aria-pressed="false">Phone</button>
+              </div>
+              <a class="button button--quiet button--small" id="live-link" target="_blank" rel="noopener noreferrer">Open live</a>
+              <button type="button" class="button button--quiet button--small" id="discard-button" disabled>Discard page changes</button>
+            </div>
+          </div>
+          <div class="stage-body" id="stage-body">
+            <div class="stage-message" id="stage-message" role="status"></div>
+            <div class="frame-wrap" id="frame-wrap" hidden>
+              <iframe class="page-frame" id="page-frame" title="Page preview"></iframe>
+              <div class="overlay" id="overlay"></div>
+            </div>
+            <textarea class="markdown-editor" id="markdown-editor" spellcheck="true" aria-label="File contents" hidden></textarea>
+          </div>
+        </main>
+
+        <aside class="panel" id="panel" aria-label="Selection"></aside>
+      </div>
+    </div>
+
+    <dialog class="dialog dialog--wide" id="save-dialog" aria-labelledby="save-dialog-title"></dialog>
+    <dialog class="dialog" id="publish-dialog" aria-labelledby="publish-dialog-title"></dialog>
+    <dialog class="dialog dialog--narrow" id="confirm-dialog" aria-labelledby="confirm-dialog-title"></dialog>
+  </body>
+</html>
