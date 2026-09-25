@@ -35,6 +35,8 @@ const browserGlobals = {
 
 const nodeGlobals = {
   AbortSignal: "readonly",
+  atob: "readonly",
+  btoa: "readonly",
   Buffer: "readonly",
   console: "readonly",
   crypto: "readonly",
