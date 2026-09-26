@@ -1,0 +1,82 @@
+/* Edit states inside the preview frame. The render copy links this file last
+   in <head>, after the site's own stylesheets, and marks elements with
+   data-edit-role (block, locked, draft-note, draft-inline, draft-check, link,
+   image, gallery). The editor's buttons and labels are drawn by the parent
+   page over the frame, never inside it. */
+
+[data-edit-role~="block"] {
+  border-radius: 3px;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  cursor: text;
+  transition: outline-color 120ms ease, background-color 120ms ease;
+}
+
+[data-edit-role~="block"]:hover {
+  outline-color: rgba(33, 78, 59, 0.35);
+}
+
+/* No background while typing: a light tint would wash out light text on the
+   site's dark sections. The gold selected outline shows which block is live. */
+[data-edit-role~="block"][contenteditable="true"] {
+  outline: 2px solid #214e3b;
+}
+
+[data-edit-role~="block"][data-edit-changed] {
+  background-color: rgba(216, 168, 78, 0.16);
+}
+
+[data-edit-role~="draft-check"] {
+  outline: 2px dotted rgba(169, 78, 52, 0.6);
+  outline-offset: 2px;
+}
+
+[data-edit-role~="locked"]:hover {
+  cursor: not-allowed;
+}
+
+[data-edit-role~="image"],
+[data-edit-role~="gallery"] {
+  cursor: pointer;
+}
+
+[data-edit-role~="image"]:hover,
+[data-edit-role~="gallery"]:hover {
+  outline: 3px solid rgba(33, 78, 59, 0.45);
+  outline-offset: -3px;
+}
+
+[data-edit-selected] {
+  outline: 2px solid #d8a84e !important;
+  outline-offset: 2px;
+}
+
+[data-edit-flash] {
+  animation: edit-flash 1.2s ease-out 1;
+}
+
+@keyframes edit-flash {
+  from {
+    background-color: rgba(216, 168, 78, 0.45);
+  }
+}
+
+/* The site's script closes the phone and tablet menu on load (the nav panel
+   gets `hidden`). The preview runs no scripts, so without this the open menu
+   would cover the page at 1024px and below. The header stays fixed there, as
+   it is for visitors. */
+@media (max-width: 1024px) {
+  .nav-panel {
+    display: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-edit-role~="block"] {
+    transition: none;
+  }
+
+  [data-edit-flash] {
+    animation: none;
+  }
+}

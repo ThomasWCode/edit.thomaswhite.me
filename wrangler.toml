@@ -1,0 +1,22 @@
+# Cloudflare Worker for the editor's GitHub sign-in (worker/index.mjs).
+# Deployed to https://site-editor-auth.thomaswhite.workers.dev, which is the
+# callback URL registered on the GitHub App "Homepage Site Editor".
+# The client secret is a Cloudflare secret: `npx wrangler secret put GITHUB_CLIENT_SECRET`.
+# For `npm run worker:dev`, put GITHUB_CLIENT_SECRET=... in the git-ignored .dev.vars.
+name = "site-editor-auth"
+main = "worker/index.mjs"
+compatibility_date = "2026-09-01"
+workers_dev = true
+# Versioned preview hostnames would not match the App's registered callback URL.
+preview_urls = false
+
+[vars]
+# Public identifiers: the App's client id (not its secret) and the one account allowed in.
+GITHUB_CLIENT_ID = "Iv23lixP9BDtnDivY3vr"
+ALLOWED_USER_IDS = "172206513"
+ALLOWED_LOGINS = "ThomasWCode"
+# Exact origins sign-in may return to; the first is the default.
+EDITOR_ORIGINS = "https://edit.thomaswhite.me,http://127.0.0.1:4174"
+
+[observability]
+enabled = true

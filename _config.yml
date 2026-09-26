@@ -1,0 +1,19 @@
+# GitHub Pages builds this site with Jekyll. Jekyll renders Markdown even without
+# front matter, so anything not listed here is published. Only the editor page,
+# its stylesheets, its modules and the vendored parser are meant to be served.
+# tests/unit/publish-allowlist.test.mjs fails if a new top-level path is neither
+# on the publish allowlist nor in this list.
+exclude:
+  - AGENTS.md
+  - README.md
+  - docs/
+  - dev/
+  - node_modules/
+  - package.json
+  - package-lock.json
+  - scripts/
+  - tests/
+  - worker/
+  - wrangler.toml
+  - eslint.config.mjs
+  - playwright.config.mjs
