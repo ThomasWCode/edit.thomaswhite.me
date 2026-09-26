@@ -134,6 +134,24 @@ test("a draft note's Done removes only its draft markers", async ({ page }) => {
   );
 });
 
+test("a placeholder still asks before Done after an item is added above it", async ({ page }) => {
+  const fake = await createFake();
+  await openEditor(page, fake);
+  await openPage(page, "Physics & Ideas");
+  // A new item before the list's last one shifts that item's key.
+  await frame(page).locator("li", { hasText: "Andrew Doig" }).locator(".compact-list-label").click();
+  await page.locator(".edit-toolbar button", { hasText: "+" }).click();
+  await page.keyboard.type("A new book");
+  await page.keyboard.press("Enter");
+  const last = frame(page).locator("li", { hasText: "Dennis E. Taylor" });
+  await last.locator(".draft-inline").click();
+  await page.locator(".edit-toolbar button", { hasText: "Done" }).click();
+  const confirm = page.locator("#confirm-dialog");
+  await expect(confirm).toContainText("still has its placeholder text");
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(last.locator(".draft-inline")).toHaveCount(1);
+});
+
 test("+ adds a paragraph after the selected one, ready to be typed over", async ({ page }) => {
   const fake = await createFake();
   await openEditor(page, fake);

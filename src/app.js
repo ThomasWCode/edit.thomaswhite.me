@@ -304,9 +304,14 @@ export function createApp({ target, client, user, onSignedOut }) {
     if (item.after === item.before) entry.log = entry.log.filter((candidate) => candidate !== item);
   }
 
-  function recordAction(entry, label) {
-    entry.log.push({ id: `${generation}:action:${entry.log.length}`, label, before: null, after: null });
+  function recordAction(entry, label, extra = {}) {
+    entry.log.push({ id: `${generation}:action:${entry.log.length}`, label, before: null, after: null, ...extra });
   }
+
+  // Adding or removing a paragraph or list item shifts the keys after it, so
+  // a key no longer names the same element in the file as loaded. The log
+  // records it, and follows Undo, Save, Discard and reloads.
+  const reshaped = (entry) => entry.log.some((item) => item.reshaped);
 
   function blockName(model, key) {
     const node = model.nodeOf.get(key);
@@ -316,7 +321,7 @@ export function createApp({ target, client, user, onSignedOut }) {
   // Keys whose text differs from the file as loaded (for the gold tint).
   function changedKeys(entry) {
     if (!entry.model || !entry.originalModel || entry.model === entry.originalModel) return [];
-    if (entry.model.nodeOf.size !== entry.originalModel.nodeOf.size) {
+    if (reshaped(entry) || entry.model.nodeOf.size !== entry.originalModel.nodeOf.size) {
       return entry.log.filter((item) => item.id.startsWith(`${generation}:`) && item.key).map((item) => item.key);
     }
     return entry.model.blocks
@@ -367,7 +372,7 @@ export function createApp({ target, client, user, onSignedOut }) {
   }
 
   // Runs a structural, draft or attribute change on the current page.
-  async function applyOperation(label, operation, renderOptions = {}) {
+  async function applyOperation(label, operation, { reshapes = false, ...renderOptions } = {}) {
     preview.finishEditing();
     const entry = current();
     if (!entry || entry.kind !== "page") return;
@@ -384,7 +389,7 @@ export function createApp({ target, client, user, onSignedOut }) {
     entry.model = next;
     entry.working = next.source;
     generation += 1;
-    recordAction(entry, label);
+    recordAction(entry, label, reshapes ? { reshaped: true } : {});
     selection = null;
     await preview.render(entry.model, { ...renderOptions, focusKey: result.key || renderOptions.focusKey || null });
     afterChange(entry);
@@ -437,6 +442,7 @@ export function createApp({ target, client, user, onSignedOut }) {
 
   function revertBlock(key) {
     const entry = current();
+    if (!entry || !canRevert(entry, key)) return;
     const original = entry.originalModel.nodeOf.get(key);
     const node = entry.model.nodeOf.get(key);
     if (!original || !node || original.tagName !== node.tagName) return;
@@ -450,6 +456,7 @@ export function createApp({ target, client, user, onSignedOut }) {
 
   const canRevert = (entry, key) =>
     entry.originalModel &&
+    !reshaped(entry) &&
     entry.model.nodeOf.size === entry.originalModel.nodeOf.size &&
     entry.originalModel.nodeOf.has(key) &&
     collapse(textOf(entry.originalModel.nodeOf.get(key))) !== blockText(entry.model, key);
@@ -458,9 +465,13 @@ export function createApp({ target, client, user, onSignedOut }) {
     const entry = current();
     const draft = entry.model.drafts.find((item) => item.key === key);
     if (!draft) return;
-    const original = entry.originalModel.nodeOf.get(key);
-    const unchanged = original && original.tagName === draft.node.tagName && collapse(textOf(original)) === collapse(textOf(draft.node));
-    if (draft.kind !== "check" && unchanged) {
+    // Still its placeholder: its text is that of a draft as loaded. Matched by
+    // text, since adding or removing a paragraph above it shifts its key.
+    const text = collapse(textOf(draft.node));
+    const placeholder = entry.originalModel.drafts.some(
+      (item) => item.kind === draft.kind && item.node.tagName === draft.node.tagName && collapse(textOf(item.node)) === text,
+    );
+    if (draft.kind !== "check" && placeholder) {
       const confirmed = await confirmAction($("confirm-dialog"), {
         title: "Still the placeholder",
         message: "This draft still has its placeholder text. Mark it done anyway?",
@@ -475,7 +486,10 @@ export function createApp({ target, client, user, onSignedOut }) {
 
   async function runAddAfter(key) {
     const entry = current();
-    await applyOperation(`Added a ${entry.model.nodeOf.get(key).tagName === "li" ? "list item" : "paragraph"}`, (model) => addAfter(model, key), { selectAll: true });
+    await applyOperation(`Added a ${entry.model.nodeOf.get(key).tagName === "li" ? "list item" : "paragraph"}`, (model) => addAfter(model, key), {
+      selectAll: true,
+      reshapes: true,
+    });
   }
 
   async function runRemove(key) {
@@ -490,7 +504,7 @@ export function createApp({ target, client, user, onSignedOut }) {
       confirm: `Remove ${what}`,
       kind: "danger",
     });
-    if (confirmed) await applyOperation(`Removed a ${what}`, (model) => removeBlock(model, key));
+    if (confirmed) await applyOperation(`Removed a ${what}`, (model) => removeBlock(model, key), { reshapes: true });
   }
 
   // "Done" alone is ambiguous when a paragraph holds several inline drafts,
@@ -888,6 +902,21 @@ export function createApp({ target, client, user, onSignedOut }) {
     if (flow.state.pr && !flow.state.busy) runFlow(() => flow.refreshChecks());
   }
 
+  // Bringing main in changes files on edits: it needs everything saved, and
+  // reloads the files from the merged branch once GitHub has made the merge.
+  async function updateFromMain() {
+    preview.finishEditing();
+    syncMarkdown();
+    if (dirtyEntries().length) {
+      toast("Save your changes before updating from main.", "warning");
+      return;
+    }
+    await runFlow(async () => {
+      await flow.updateFromMain();
+      await reload();
+    });
+  }
+
   // Runs a flow action, then follows where it left the repository: after a
   // merge (here or on GitHub) wait for the deployment and reload; after the
   // pull request was closed on GitHub, reload.
@@ -977,7 +1006,7 @@ export function createApp({ target, client, user, onSignedOut }) {
       actions.push(button("Publish", () => runFlow(() => flow.publish()), { kind: "primary", disabled: busy || state.aheadBy === 0 }));
     }
     if (pr) actions.push(button("Refresh", () => runFlow(() => flow.refreshChecks()), { disabled: busy }));
-    if (pr && state.behindBy > 0) actions.push(button("Update from main", () => runFlow(() => flow.updateFromMain()), { disabled: busy }));
+    if (pr && state.behindBy > 0) actions.push(button("Update from main", updateFromMain, { disabled: busy }));
     if (state.canRefreshScreenshots) actions.push(button("Refresh screenshots", () => runFlow(() => flow.refreshScreenshots()), { disabled: busy }));
     if (pr && state.canStartChecks && state.phase === "checking") actions.push(button("Start checks", () => runFlow(() => flow.startChecks()), { disabled: busy }));
     if (pr) actions.push(button("Merge", () => runFlow(() => flow.merge()), { kind: "primary", disabled: busy || state.phase !== "publishable" }));
