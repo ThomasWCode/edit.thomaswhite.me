@@ -424,5 +424,10 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
     // For tests and the mock: the live element of a key.
     elementFor,
     isEditing: () => editing !== null,
+    // The block being typed in, as it stands, without finishing it.
+    editingSnapshot() {
+      if (!editing || !editing.isConnected) return null;
+      return { key: editing.getAttribute("data-edit-key"), snapshot: snapshotFromDom(editing) };
+    },
   };
 }

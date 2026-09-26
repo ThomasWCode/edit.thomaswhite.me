@@ -1,12 +1,13 @@
 import { expect, test } from "@playwright/test";
-import { createFake, frame, openEditor, readFixture, save, typeAtEnd } from "./support.mjs";
+import { gitBlobSha } from "../../src/github-client.js";
+import { createFake, frame, frameReady, openEditor, readFixture, save, typeAtEnd } from "./support.mjs";
 
 const treeWrites = (fake) => fake.requests.filter((request) => request.method === "POST" && request.path === "/git/trees");
 
 async function openPage(page, label) {
   await page.locator("#page-list .file-link", { hasText: label }).first().click();
   await expect(page.locator("#stage-title")).toHaveText(label);
-  await expect(page.locator("#frame-wrap")).toHaveAttribute("data-ready", "true");
+  await frameReady(page);
 }
 
 test("signs in from the Worker's fragment and clears it from the address bar", async ({ page }) => {
@@ -267,4 +268,62 @@ test("unsaved edits survive a reload, and the phone preview is 390 pixels wide",
   await page.getByRole("button", { name: "Phone", exact: true }).click();
   await expect(page.locator("#frame-wrap")).toHaveAttribute("data-width", "phone");
   expect(Math.round((await page.locator("#page-frame").boundingBox()).width)).toBeLessThanOrEqual(390);
+});
+
+test("typing in a block that was never finished survives a reload", async ({ page }) => {
+  const fake = await createFake();
+  await openEditor(page, fake);
+  await typeAtEnd(page, frame(page).locator("p", { hasText: "Pick whatever sounds a bit interesting." }), " Unfinished");
+  await page.waitForTimeout(1200);
+  await page.reload();
+  await expect(frame(page).locator("p", { hasText: "Pick whatever" })).toHaveText("Pick whatever sounds a bit interesting. Unfinished");
+  await expect(page.locator("#save-button")).toHaveText("Save (1)");
+});
+
+test("unsaved Record edits made to an older version are kept aside, not overwritten", async ({ page }) => {
+  const fake = await createFake();
+  await openEditor(page, fake);
+  await page.locator("#record-list .file-link").click();
+  const editor = page.locator("#markdown-editor");
+  await editor.press("Control+End");
+  await editor.type("- Typed before the file changed.\n");
+  await page.waitForTimeout(600);
+  await fake.commitAs("main", { "docs/record.md": `${fake.fileAt("main", "docs/record.md")}- Added on another device.\n` });
+  await page.reload();
+  await page.locator("#record-list .file-link").click();
+  const panel = page.locator("#panel");
+  await expect(panel).toContainText("changed on GitHub after your unsaved edits");
+  await expect(editor).toHaveValue(/Added on another device/);
+  await editor.press("Control+End");
+  await editor.type("- New typing.\n");
+  await page.waitForTimeout(600);
+  await page.reload();
+  await page.locator("#record-list .file-link").click();
+  await expect(panel).toContainText("changed on GitHub after your unsaved edits");
+  await panel.getByRole("button", { name: "Show them" }).click();
+  await expect(page.locator("#save-dialog")).toContainText("Typed before the file changed.");
+});
+
+test("Save waits until every page has loaded, so the site-wide checks see the whole site", async ({ page }) => {
+  const fake = await createFake();
+  const blob = await gitBlobSha(readFixture("programming.html"));
+  let failing = true;
+  await openEditor(page, fake, {
+    beforeLoad: (target) =>
+      target.route(`https://api.github.com/repos/**/git/blobs/${blob}`, (route) =>
+        failing
+          ? route.fulfill({ status: 502, headers: { "access-control-allow-origin": "*" }, body: '{"message":"Server Error"}' })
+          : route.fallback(),
+      ),
+  });
+  await typeAtEnd(page, frame(page).locator("p", { hasText: "Pick whatever sounds a bit interesting." }), " Blocked?");
+  await page.keyboard.press("Enter");
+  await page.locator("#save-button").click();
+  await expect(page.locator("#toast")).toContainText("Couldn't load Programming");
+  await expect(page.locator("#save-dialog")).toBeHidden();
+  expect(fake.requests.filter((request) => request.path === "/git/trees")).toHaveLength(0);
+
+  failing = false;
+  await save(page);
+  expect(fake.fileAt("edits", "index.html")).toContain("interesting. Blocked?</p>");
 });

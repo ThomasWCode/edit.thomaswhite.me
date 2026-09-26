@@ -3,12 +3,22 @@
 // checks, publish-flow); this file keeps the state of each open file and draws
 // the interface.
 
-import { SignedOutError } from "./auth.js";
+import { AuthNetworkError, SignedOutError } from "./auth.js";
 import { changedLines, checkPage, checkSite, curlQuotes, isExternalRedirect, siteContext } from "./checks.js";
 import { confirmAction, openDialog, promptText } from "./dialogs.js";
 import { commitMessage, countLineChanges, lineHunks, trimEqualRuns, wordDiff } from "./diff-view.js";
 import { $, button, externalLink, h } from "./dom.js";
-import { completeDraft, EditRejectedError, MONTHS, removeAttribute, setAttribute, setNowUpdated, updatedLabel, commitTextEdit } from "./edits.js";
+import {
+  commitTextEdit,
+  completeDraft,
+  EditRejectedError,
+  MONTHS,
+  openInNewTab,
+  openInSameTab,
+  setAttribute,
+  setNowUpdated,
+  updatedLabel,
+} from "./edits.js";
 import { GitHubError } from "./github-client.js";
 import { newPostSource, normaliseMarkdown, recordSlugs } from "./markdown-files.js";
 import { attribute, blockText, buildPageModel, collapse, pageTitle, textOf } from "./page-model.js";
@@ -91,6 +101,7 @@ export function createApp({ target, client, user, onSignedOut }) {
       renderPanel();
     },
     onInput: () => {
+      persistTyping();
       if (!typing) {
         typing = true;
         renderTopbar();
@@ -193,12 +204,16 @@ export function createApp({ target, client, user, onSignedOut }) {
     return entry.loading;
   }
 
+  // Unsaved work from sessionStorage. Edits made to an older version of the
+  // file (it changed on GitHub since) are kept aside as `stale`, shown in the
+  // panel and stored until discarded, so new typing can never overwrite them.
   function restoreFromStore(entry) {
     const record = store.load(entry.path);
     if (!record) return;
     if (entry.isNew || record.loadedSha === entry.loadedSha) {
       entry.working = record.working;
       entry.log = Array.isArray(record.log) ? record.log : [];
+      entry.stale = record.stale || null;
       if (record.isNew) entry.isNew = true;
       if (entry.kind === "page") {
         try {
@@ -206,20 +221,40 @@ export function createApp({ target, client, user, onSignedOut }) {
         } catch {
           entry.working = entry.original;
           entry.model = entry.originalModel;
-          store.remove(entry.path);
+          persist(entry);
         }
       }
     } else {
-      entry.stale = record;
+      entry.stale = { original: record.original, working: record.working };
     }
   }
 
+  function storedRecord(entry, working = entry.working) {
+    return { loadedSha: entry.loadedSha, original: entry.original, working, log: entry.log, isNew: entry.isNew, stale: entry.stale };
+  }
+
   function persist(entry) {
-    if (isDirty(entry)) {
-      store.save(entry.path, { loadedSha: entry.loadedSha, original: entry.original, working: entry.working, log: entry.log, isNew: entry.isNew });
-    } else {
-      store.remove(entry.path);
-    }
+    if (isDirty(entry) || entry.stale) store.save(entry.path, storedRecord(entry));
+    else store.remove(entry.path);
+  }
+
+  // While a block is being typed in, its text reaches sessionStorage after a
+  // pause, so a crash mid-block loses at most the last few words. The model and
+  // undo stack change only when the block is finished.
+  let interimTimer = null;
+  function persistTyping() {
+    clearTimeout(interimTimer);
+    interimTimer = setTimeout(() => {
+      const entry = current();
+      const live = preview.editingSnapshot();
+      if (!entry || entry.kind !== "page" || entry.status !== "ready" || !live) return;
+      try {
+        const result = commitTextEdit(entry.model, live.key, live.snapshot);
+        if (result.changed) store.save(entry.path, storedRecord(entry, result.model.source));
+      } catch {
+        // The block's own commit reports anything wrong when it finishes.
+      }
+    }, 800);
   }
 
   // Loads every file in the background: labels, draft counts, and the whole
@@ -293,11 +328,13 @@ export function createApp({ target, client, user, onSignedOut }) {
   function commitBlock(key, snapshot) {
     const entry = current();
     typing = false;
+    clearTimeout(interimTimer);
     if (!entry || entry.kind !== "page" || entry.status !== "ready") return;
     const before = entry.model;
     try {
       const result = commitTextEdit(before, key, snapshot);
       if (!result.changed) {
+        persist(entry); // replaces any interim copy of this block's typing
         renderTopbar();
         return;
       }
@@ -566,21 +603,58 @@ export function createApp({ target, client, user, onSignedOut }) {
     renderTopbar();
     if (!dirty.length || flow.state.busy) return;
     setStatus("Checking the site before saving…");
+    // The site-wide checks need every page and the record. A file that failed
+    // to load for a passing reason (GitHub, the network) gets one retry, then
+    // blocks the save; one that can't be parsed is reported in the dialog.
+    const transient = (entry) => entry.status === "error" && (entry.error instanceof GitHubError || entry.error instanceof AuthNetworkError);
     try {
       await prefetchAll();
+      const retry = [...entries.values()].filter(transient);
+      for (const entry of retry) Object.assign(entry, { status: "unloaded", error: null });
+      if (retry.length) await prefetchAll();
     } catch (error) {
-      toast(describeError(error, target), "error");
+      if (error instanceof SignedOutError) onSignedOut(error.message);
+      else toast(describeError(error, target), "error");
+      renderTopbar();
       return;
     }
+    const unavailable = [...entries.values()].filter(transient);
+    if (unavailable.length) {
+      toast(`Couldn't load ${unavailable.map((entry) => entry.label).join(", ")} from GitHub, so the site-wide checks can't run. Try Save again in a moment.`, "error");
+      renderTopbar();
+      return;
+    }
+    const unreadable = [...entries.values()].filter((entry) => entry.status === "error");
     const context = checkContext();
+    const emptyFile = {
+      level: "block",
+      code: "empty-file",
+      message: "This file is empty. Write something, or discard the changes.",
+      key: null,
+      line: null,
+    };
     const results = dirty.map((entry) => ({
       entry,
-      findings: entry.kind === "page" ? checkPage(entry.model, entry.originalModel, context) : [],
+      findings:
+        entry.kind === "page"
+          ? checkPage(entry.model, entry.originalModel, context)
+          : entry.working.trim()
+            ? []
+            : [emptyFile],
     }));
     const siteFindings = checkSite(
       pageEntries().filter((entry) => entry.status === "ready").map((entry) => entry.model),
       { slugs: recordSlugsNow() },
     );
+    for (const entry of unreadable) {
+      siteFindings.push({
+        level: "warn",
+        code: "unreadable",
+        message: `${entry.path} couldn't be read (${describeError(entry.error, target)}), so it isn't in the site-wide checks.`,
+        key: null,
+        line: null,
+      });
+    }
     const blocking = [...results.flatMap((result) => result.findings), ...siteFindings].filter((finding) => finding.level === "block");
     renderTopbar();
     const choice = await openDialog($("save-dialog"), {
@@ -618,11 +692,10 @@ export function createApp({ target, client, user, onSignedOut }) {
       const month = thisMonth();
       return run(`Set Updated to ${updatedLabel(month).replace("Updated ", "")}`, (model) => setNowUpdated(model, month));
     }
-    if (finding.fix === "new-tab") {
-      return run("Open in a new tab", (model) => setAttribute(setAttribute(model, finding.key, "target", "_blank"), finding.key, "rel", "noopener noreferrer"));
-    }
-    if (finding.fix === "same-tab") {
-      return run("Open in the same tab", (model) => removeAttribute(removeAttribute(model, finding.key, "target"), finding.key, "rel"));
+    if (finding.fix === "new-tab") return run("Open in a new tab", (model) => openInNewTab(model, finding.key));
+    if (finding.fix === "same-tab") return run("Open in the same tab", (model) => openInSameTab(model, finding.key));
+    if (finding.fix === "absolute") {
+      return run(`Use ${finding.value}`, (model) => setAttribute(model, finding.key, "href", finding.value));
     }
     if (finding.fix === "gallery-caption") {
       return run("Copy the caption", (model) => {
@@ -809,13 +882,18 @@ export function createApp({ target, client, user, onSignedOut }) {
       publishDialogOpen = false;
     };
     if (!dialog.open) dialog.showModal();
-    if (flow.state.pr && !flow.state.busy) flow.refreshChecks().catch((error) => toast(describeError(error, target), "error"));
+    if (flow.state.pr && !flow.state.busy) runFlow(() => flow.refreshChecks());
   }
 
+  // Runs a flow action, then follows where it left the repository: after a
+  // merge (here or on GitHub) wait for the deployment and reload; after the
+  // pull request was closed on GitHub, reload.
   async function runFlow(action) {
+    const hadPr = Boolean(flow.state.pr);
     try {
       await action();
       if (flow.state.phase === "published") await afterPublish();
+      else if (hadPr && !flow.state.pr) await reload();
     } catch (error) {
       if (error instanceof SignedOutError) onSignedOut(error.message);
       else toast(describeError(error, target), "error");
@@ -824,13 +902,21 @@ export function createApp({ target, client, user, onSignedOut }) {
     }
   }
 
-  async function afterPublish() {
-    for (let attempt = 0; attempt < 12; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, attempt ? DEPLOY_POLL_MS : 2_000));
-      const deploy = await flow.refreshDeploy().catch(() => null);
-      if (deploy && deploy.status === "completed") break;
+  let followingPublish = null;
+  function afterPublish() {
+    if (!followingPublish) {
+      followingPublish = (async () => {
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, attempt ? DEPLOY_POLL_MS : 2_000));
+          const deploy = await flow.refreshDeploy().catch(() => null);
+          if (deploy && deploy.status === "completed") break;
+        }
+        await reload();
+      })().finally(() => {
+        followingPublish = null;
+      });
     }
-    await reload();
+    return followingPublish;
   }
 
   function renderPublishDialog() {
@@ -936,13 +1022,25 @@ export function createApp({ target, client, user, onSignedOut }) {
     }
   }
 
+  // A background refresh: quiet about passing failures, but it follows a pull
+  // request merged or closed on GitHub, like runFlow.
+  async function followRefresh() {
+    if (flow.state.busy || !flow.state.pr) return;
+    const hadPr = Boolean(flow.state.pr);
+    try {
+      await flow.refreshChecks();
+    } catch (error) {
+      if (error instanceof SignedOutError) onSignedOut(error.message);
+      return;
+    }
+    if (flow.state.phase === "published") await afterPublish();
+    else if (hadPr && !flow.state.pr) await reload();
+  }
+
   function startPolling() {
     clearInterval(pollTimer);
     pollTimer = setInterval(() => {
-      if (document.visibilityState !== "visible" || flow.state.busy || !flow.state.pr) return;
-      flow.refreshChecks().catch((error) => {
-        if (error instanceof SignedOutError) onSignedOut(error.message);
-      });
+      if (document.visibilityState === "visible") followRefresh();
     }, POLL_MS);
   }
 
@@ -1075,6 +1173,7 @@ export function createApp({ target, client, user, onSignedOut }) {
     panel.replaceChildren();
     if (!entry || entry.status !== "ready") return;
     if (entry.kind === "markdown") {
+      if (entry.stale) panel.append(staleNotice(entry));
       panel.append(markdownPanel(entry));
       return;
     }
@@ -1096,16 +1195,16 @@ export function createApp({ target, client, user, onSignedOut }) {
     const view = () =>
       openDialog($("save-dialog"), {
         title: "Your earlier edits",
-        body: h("div", {}, h("p", {}, "These unsaved edits were made to an older version of the page. Copy what you need, then discard them."), hunksView(entry.stale.original || "", entry.stale.working)),
+        body: h("div", {}, h("p", {}, "These unsaved edits were made to an older version of this file. Copy what you need, then discard them."), hunksView(entry.stale.original || "", entry.stale.working)),
         actions: [{ label: "Close", value: null }],
       });
     return h(
       "section",
       { class: "panel-section notice notice--warning" },
-      h("p", {}, "This page changed on GitHub after your unsaved edits to it, so they weren't applied."),
+      h("p", {}, "This file changed on GitHub after your unsaved edits to it, so they weren't applied. They're kept until you discard them."),
       h("div", { class: "button-row" }, button("Show them", view, { small: true }), button("Discard them", () => {
-        store.remove(entry.path);
         entry.stale = null;
+        persist(entry);
         renderPanel();
       }, { small: true, kind: "quiet" })),
     );
@@ -1191,10 +1290,10 @@ export function createApp({ target, client, user, onSignedOut }) {
     const external = /^[a-z]+:/i.test(href) || /\.pdf($|[?#])/i.test(href);
     const newTab = attribute(node, "target") === "_blank";
     if (external && !newTab) {
-      section.append(button("Open in a new tab", () => applyOperation("Made a link open in a new tab", (model) => setAttribute(setAttribute(model, key, "target", "_blank"), key, "rel", "noopener noreferrer")), { small: true }));
+      section.append(button("Open in a new tab", () => applyOperation("Made a link open in a new tab", (model) => openInNewTab(model, key)), { small: true }));
     }
     if (!external && newTab) {
-      section.append(button("Open in the same tab", () => applyOperation("Made a link open in the same tab", (model) => removeAttribute(removeAttribute(model, key, "target"), key, "rel")), { small: true }));
+      section.append(button("Open in the same tab", () => applyOperation("Made a link open in the same tab", (model) => openInSameTab(model, key)), { small: true }));
     }
     return section;
   }
@@ -1379,7 +1478,7 @@ export function createApp({ target, client, user, onSignedOut }) {
       }
     });
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && flow.state.pr && !flow.state.busy) flow.refreshChecks().catch(() => {});
+      if (document.visibilityState === "visible") followRefresh();
     });
   }
 
@@ -1406,7 +1505,7 @@ export function createApp({ target, client, user, onSignedOut }) {
       renderTopbar();
       prefetchAll().catch(() => {});
       startPolling();
-      if (flow.state.pr) flow.refreshChecks().catch(() => {});
+      followRefresh();
     } catch (error) {
       if (error instanceof SignedOutError) {
         onSignedOut(error.message);

@@ -90,16 +90,25 @@ export const SIGN_IN_FRAGMENT =
   "#access_token=ghu_test&expires_in=28800&refresh_token=ghr_test&refresh_token_expires_in=15897600&login=ThomasWCode&user_id=172206513";
 
 // Signs in through the fragment and waits for the homepage to be editable.
-export async function openEditor(page, fake) {
+// `beforeLoad(page)` can add routes that take precedence over the fake's.
+export async function openEditor(page, fake, { beforeLoad = null } = {}) {
   const worker = await connect(page, fake);
+  if (beforeLoad) await beforeLoad(page);
   await page.goto(`/${SIGN_IN_FRAGMENT}`);
   await expect(page.locator("#stage-title")).toHaveText("Home");
   await expect(frame(page).locator("h1")).toHaveText("Hi, I’m Tom.");
-  await expect(page.locator("#frame-wrap")).toHaveAttribute("data-ready", "true");
+  await frameReady(page);
   return worker;
 }
 
 export const frame = (page) => page.frameLocator("#page-frame");
+
+// The frame is ready at its load event, which waits for the site's CSS, fonts
+// and images from the live site: slower than the default wait when several
+// browsers fetch them at once.
+export async function frameReady(page) {
+  await expect(page.locator("#frame-wrap")).toHaveAttribute("data-ready", "true", { timeout: 30_000 });
+}
 
 // Clicks just after the last character of a block and types, as a person would.
 export async function typeAtEnd(page, locator, text) {
