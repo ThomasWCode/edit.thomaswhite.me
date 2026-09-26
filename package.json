@@ -13,7 +13,8 @@
     "vendor": "node scripts/bundle-parse5.mjs",
     "lint": "eslint .",
     "test:unit": "node --test tests/unit/*.test.mjs",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --project=chromium",
+    "test:e2e:all": "playwright test --workers=2",
     "test": "npm run lint && npm run test:unit && npm run test:e2e"
   },
   "devDependencies": {
