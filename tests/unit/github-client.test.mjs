@@ -189,7 +189,7 @@ test("pull request, checks, workflow and merge calls use the target's branch nam
     json(200, { workflow_runs: [{ id: 1 }] }),
     json(200, { merged: true, sha: "m" }),
     json(422, { message: "Reference does not exist" }),
-    json(200, { workflow_runs: [{ name: "pages-build-deployment" }, { name: "Test suite" }] }),
+    json(200, { workflow_runs: [{ name: "Publish the live site" }, { name: "pages-build-deployment" }, { name: "Test suite" }] }),
   ]);
   assert.deepEqual(await client.findOpenPr(), { number: 7 });
   assert.deepEqual(await client.createPr({ title: "Text edits from the editor", body: "Pages changed" }), { number: 8 });
@@ -198,7 +198,11 @@ test("pull request, checks, workflow and merge calls use the target's branch nam
   assert.deepEqual(await client.listWorkflowRuns("update-visual-baselines.yml", { branch: "edits" }), [{ id: 1 }]);
   assert.deepEqual(await client.mergePr(8, "head"), { merged: true, sha: "m" });
   await client.deleteBranch("edits");
-  assert.deepEqual((await client.deployRuns()).map((run) => run.name), ["pages-build-deployment"]);
+  assert.deepEqual(
+    (await client.deployRuns()).map((run) => run.name),
+    ["Publish the live site", "pages-build-deployment"],
+    "the live site's own workflow (drafts left out) and GitHub's automatic build",
+  );
 
   const paths = calls.map((call) => `${call.method} ${call.url.replace(REPO, "")}`);
   assert.deepEqual(paths, [
