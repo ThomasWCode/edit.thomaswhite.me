@@ -76,9 +76,3 @@ export function countLineChanges(before, after) {
   }
   return { added, removed };
 }
-
-// The commit message for a save: "Edit 2 files in the editor" and the list.
-export function commitMessage(paths) {
-  const noun = paths.length === 1 ? "file" : "files";
-  return `Edit ${paths.length} ${noun} in the editor\n\n${paths.map((path) => `- ${path}`).join("\n")}\n`;
-}

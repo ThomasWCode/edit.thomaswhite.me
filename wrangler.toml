@@ -2,7 +2,8 @@
 # Deployed to https://site-editor-auth.thomaswhite.workers.dev, which is the
 # callback URL registered on the GitHub App "Homepage Site Editor".
 # The client secret is a Cloudflare secret: `npx wrangler secret put GITHUB_CLIENT_SECRET`.
-# For `npm run worker:dev`, put GITHUB_CLIENT_SECRET=... in the git-ignored .dev.vars.
+# So is the Groq key behind the AI suggestions: `npx wrangler secret put GROQ_API_KEY`.
+# For `npm run worker:dev`, put GITHUB_CLIENT_SECRET=... (and GROQ_API_KEY=...) in the git-ignored .dev.vars.
 name = "site-editor-auth"
 main = "worker/index.mjs"
 compatibility_date = "2026-09-01"
@@ -17,6 +18,8 @@ ALLOWED_USER_IDS = "172206513"
 ALLOWED_LOGINS = "ThomasWCode"
 # Exact origins sign-in may return to; the first is the default.
 EDITOR_ORIGINS = "https://edit.thomaswhite.me,http://127.0.0.1:4174"
+# The Groq model for AI suggestions (production, with strict JSON output).
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 [observability]
 enabled = true

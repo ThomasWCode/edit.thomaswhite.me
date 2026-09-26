@@ -722,6 +722,25 @@ textarea.text-input {
   resize: vertical;
 }
 
+/* The commit message and pull request fields in the Save and Publish dialogs. */
+.message-fields {
+  padding: 0.25rem 0 0.5rem;
+}
+
+.message-fields .field {
+  margin: 0.5rem 0;
+}
+
+.message-actions {
+  margin: 0.25rem 0 0;
+}
+
+.message-status {
+  min-height: 1.25rem;
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+}
+
 .hint {
   margin-top: 0.75rem;
 }

@@ -10,6 +10,7 @@ import { createAuth } from "./auth.js";
 import { activeTarget, auth as authOrigins } from "./config.js";
 import { $ } from "./dom.js";
 import { createGitHubClient } from "./github-client.js";
+import { createSuggester } from "./suggest.js";
 
 const params = new URLSearchParams(location.search);
 const isLoopback = () => ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname);
@@ -55,13 +56,16 @@ async function start() {
   let auth;
   let fetchImpl = (input, init) => window.fetch(input, init);
   let mock = null;
+  let suggest = null;
   if (isLoopback() && params.has("mock")) {
     const { createMockSession } = await import("../dev/mock-session.js");
     mock = await createMockSession({ target });
     auth = mock.auth;
     fetchImpl = mock.fetch;
+    suggest = mock.suggest;
   } else {
     const workerUrl = isLoopback() && params.get("worker") === "local" ? authOrigins.local : authOrigins.production;
+    suggest = createSuggester({ workerUrl, fetch: (input, init) => window.fetch(input, init), getAccessToken: () => auth.getAccessToken() });
     auth = createAuth({
       workerUrl,
       storage: localStorage,
@@ -108,7 +112,7 @@ async function start() {
     return;
   }
   showView("editor");
-  app = createApp({ target, client, user, onSignedOut: signedOut });
+  app = createApp({ target, client, user, onSignedOut: signedOut, suggest });
   if (mock) {
     mock.mountPanel(app);
     // For poking at the fake from the browser console while developing.

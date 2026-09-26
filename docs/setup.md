@@ -14,6 +14,7 @@ Everything the owner does outside the code, in order, with what has been done. H
 | `npx wrangler login` | Tom's terminal | Logged in to "Thomasawhite321@gmail.com's Account". |
 | Worker deploy | `npx wrangler deploy` (session) | `https://site-editor-auth.thomaswhite.workers.dev`. |
 | Client secret | `GITHUB_HOMEPAGE_CLIENT_SECRET` user environment variable, piped to `wrangler secret put GITHUB_CLIENT_SECRET` (session) | Health check says "Client secret: set"; a test exchange with a bogus code returns `bad_verification_code`, so GitHub accepts the client ID and secret. |
+| Live checks 1 to 4 | The editor, with Tom signed in (26 September) | Signed in and authorised the App. "see" → "watch" on Physics & Ideas and Programming, saved as two one-line commits (no workflow ran), published as ThomasWCode/ThomasWCode.github.io-revised#34. The baseline workflow regenerated the Programming screenshot first, and one CI run went green. Merged with a merge commit, `edits` deleted, live on new.thomaswhite.me. |
 
 ### The GitHub App's settings
 
@@ -28,15 +29,14 @@ These are the values from the plan. A private App's settings can't be read throu
 
 ## Still to do
 
-### Live checks (with the session, about 30 minutes)
+### Live checks (with the session)
 
-1. Sign in at `https://edit.thomaswhite.me` in your usual browser. GitHub asks once to authorise "Homepage Site Editor"; after that sign-in is a single click. The editor should list the pages and open Home.
-2. Make a one-word edit on a deep page (Physics & Ideas, say), press Enter, **Save**. On GitHub, `edits` has one commit with a one-line diff; no workflow runs.
-3. **Publish**: the pull request "Text edits from the editor" opens and its three checks run (about fifteen minutes). When they pass, **Merge**. `edits` is deleted and new.thomaswhite.me shows the word a minute or so later.
-4. A homepage edit exercises the screenshot path: Publish first runs **Update visual baselines** on `edits` (about four minutes), then opens the pull request. The dialog links the regenerated PNG; look at it before merging.
+Checks 1 to 4 (sign-in, Save, Publish and Merge, the screenshot path) are done; see the table above.
+
 5. Sign in from your phone and make an edit there; try a paste.
 6. **Sign out**, then the session checks whether the old refresh token still works at the Worker's `/refresh`. If it does, Sign out should default to "everywhere" (a one-line change in `src/editor.js`).
 7. Optionally, sign in with a different GitHub account: it should see "This editor is private".
+8. Press **Suggest with AI** in the Save dialog once the Groq key is in place (below), and check the suggestion before saving.
 
 ### Tidy-up
 
@@ -51,13 +51,23 @@ These are the values from the plan. A private App's settings can't be read throu
 2. In this repository: `npx wrangler secret put GITHUB_CLIENT_SECRET` and paste it at the prompt (this redeploys the Worker by itself).
 3. Check `https://site-editor-auth.thomaswhite.workers.dev/` says "Client secret: set", sign in once, then delete the old secret on GitHub.
 
+### AI suggestions (Groq)
+
+**Suggest with AI** in the Save and Publish dialogs uses a key from Tom's Groq account (free tier), held by the Worker as the secret `GROQ_API_KEY`. How it works and what is sent: [`how-it-works.md`](how-it-works.md), "AI suggestions".
+
+- **Set or rotate the key:** in this repository, `npx wrangler secret put GROQ_API_KEY` and paste the key at the prompt (this redeploys the Worker). A session can pipe it from Tom's `GROQ_API_KEY` user environment variable without printing it. Then `https://site-editor-auth.thomaswhite.workers.dev/` should say "AI suggestions: on (openai/gpt-oss-120b)". After a rotation, delete the old key in the Groq console.
+- **Groq's Data Controls:** turn on **Zero Data Retention** in the Data Controls settings of the Groq console. Groq keeps no inference data by default, but without this it may log requests for up to 30 days when investigating abuse or reliability.
+- **Change the model:** `GROQ_MODEL` in `wrangler.toml` (a production model with strict JSON output: `openai/gpt-oss-120b` or `openai/gpt-oss-20b`), then `npx wrangler deploy`.
+- **Turn it off:** `npx wrangler secret delete GROQ_API_KEY`. The button then says the Worker has no Groq key, and the generated messages carry on as before.
+- The `GROQ_API_KEY` user environment variable is only a copy: keep it for `npm run worker:dev`, or remove it once the Worker holds the key.
+
 ### Cutting off a device
 
 GitHub → Settings → Applications → Authorized GitHub Apps → Homepage Site Editor → Revoke signs out every device at once. From a device that still has the editor open, Account → **Sign out everywhere** does the same.
 
 ### Changing the Worker
 
-`npm run worker:dev` runs it at `http://127.0.0.1:8787` (put `GITHUB_CLIENT_SECRET=…` in the git-ignored `.dev.vars` first) and `http://127.0.0.1:4174/?worker=local` signs in through it. `npx wrangler deploy` publishes it; there is one deploy per change and no staging copy (`preview_urls = false`, because versioned hostnames would not match the App's callback URL). `npx wrangler tail` streams its logs during a sign-in.
+`npm run worker:dev` runs it at `http://127.0.0.1:8787` (put `GITHUB_CLIENT_SECRET=…`, and `GROQ_API_KEY=…` for the AI suggestions, in the git-ignored `.dev.vars` first) and `http://127.0.0.1:4174/?worker=local` signs in through it. `npx wrangler deploy` publishes it; there is one deploy per change and no staging copy (`preview_urls = false`, because versioned hostnames would not match the App's callback URL). `npx wrangler tail` streams its logs during a sign-in.
 
 ### Working on the editor locally
 

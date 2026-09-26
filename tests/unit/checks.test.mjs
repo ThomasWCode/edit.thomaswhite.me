@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { changedLines, checkPage, checkSite, curlQuotes, isExternalRedirect, siteContext } from "../../src/checks.js";
-import { commitMessage, lineHunks, trimEqualRuns, wordDiff } from "../../src/diff-view.js";
+import { lineHunks, trimEqualRuns, wordDiff } from "../../src/diff-view.js";
 import { setAttribute, setNowUpdated } from "../../src/edits.js";
 import { buildPageModel } from "../../src/page-model.js";
 import { blockKeyStarting, editBlock, loadModel, PAGE_FILES, renderedSnapshot, siteFiles } from "../support/fixtures.mjs";
@@ -184,7 +184,7 @@ test("changedLines reports new and changed lines of the working file", () => {
   assert.deepEqual([...changedLines("a\nb", "a\nb")], []);
 });
 
-test("the Save dialog's word runs, trimmed context, line hunks and commit message", () => {
+test("the Save dialog's word runs, trimmed context and line hunks", () => {
   assert.deepEqual(wordDiff("I like red apples", "I like green apples"), [
     { type: "equal", text: "I like" },
     { type: "delete", text: "red" },
@@ -201,7 +201,4 @@ test("the Save dialog's word runs, trimmed context, line hunks and commit messag
   assert.equal(hunks.length, 2);
   assert.deepEqual(hunks[0], { oldStart: 1, newStart: 1, rows: [{ type: " ", text: "1" }, { type: "-", text: "2" }, { type: "+", text: "two" }, { type: " ", text: "3" }] });
   assert.equal(lineHunks(before, after, 3).length, 1, "close changes merge into one hunk");
-
-  assert.equal(commitMessage(["index.html"]), "Edit 1 file in the editor\n\n- index.html\n");
-  assert.equal(commitMessage(["index.html", "docs/record.md"]), "Edit 2 files in the editor\n\n- index.html\n- docs/record.md\n");
 });
