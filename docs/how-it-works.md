@@ -88,19 +88,20 @@ Placeholders (`draft-note`, `draft-inline`) and `data-draft="check"` come from t
   - The copy's ids become `data-draft-id`, so no id is on the preview twice; publishing names them back.
   - The copy goes on lines of its own when the live element has its lines to itself, as the site's build cuts drafts. Otherwise it hugs the live element, so leaving it out or publishing it adds no whitespace.
   - When that element holds something the site pins (the h1, Analisa's words, a proof label), only the changed block is copied. The home page's portrait note shares its section with the h1, for example. If neither can be copied, the change is refused and what was typed is shown for copying.
-  - Until the new version is published or discarded, the live element is locked (with its reason in the panel) and dimmed in the preview. When the Now section has a new version waiting, the Now helper sets that version, drafts on or off.
+  - Until the new version is published or discarded, the live element stays as it is, drafts on or off. A block is locked, with its reason in the panel, and dimmed in the preview. A link or image says why in its panel instead of offering changes. Any other change that would touch it is refused (`refuseWaitingChange`): published, the new version would undo the change, and as a draft it would make a second version. When the Now section has a new version waiting, the Now helper sets that version.
 - **+** adds the paragraph or item as a `new` draft, unless it lands inside a draft already. After an element that is itself a draft it lands outside it, so it gets its own marker.
 - **×** marks the block `remove`, without asking, since nothing leaves the live site until the removal is published.
-- **A change inside any draft** edits that draft.
+- **A change inside a draft** edits that draft, except in content marked to remove: that is still live, so with Drafts on a change to it is refused until **Keep it**.
 
 **The panel's Drafts part**, with the toggle on or off:
 
 - **Make this a draft** marks the smallest whole element around the block `new`, which takes it off the live site. **Make the section a draft** does the same to the whole section.
 - With words selected in the block being typed in, **Keep them off the live site** wraps them in `<span data-draft="new">`. **Remove them when published** wraps them in `<span data-draft="remove">`.
   - The words must be in one run of text, not across a link or other formatting.
+  - Left out (a `new` phrase on the live site, or a removal published), a phrase takes the spacing with it: the space before it when punctuation or the end of a line follows, so the live page never reads "a bit .".
   - Selecting the block's whole text marks the block itself.
   - The preview remembers the last selection (`selectionchange`), because clicking a panel button moves focus out of the frame.
-- The page's h1 and anything holding Analisa's words can't be made drafts or marked to remove: the live page needs them.
+- The page's h1 and anything holding Analisa's words can't be made drafts or marked to remove: the live page needs them. Nor can anything that holds a draft already: publishing the outer draft would leave the inner one behind.
 
 **Publishing and discarding** are in the panel and, for the draft a block is in, the toolbar:
 
@@ -112,9 +113,9 @@ Placeholders (`draft-note`, `draft-inline`) and `data-draft="check"` come from t
 
 Publishing a new version refuses if the element before it is no longer a live one with the same tag.
 
-**What thomaswhite.me will show.** `liveSource()` leaves drafts out exactly as the site's `scripts/drafts.mjs` does. A unit test covers every block of six fixture pages: drafting a change leaves the live page unchanged, publishing the draft gives the direct edit, and discarding it gives the original.
+**What thomaswhite.me will show.** `liveSource()` leaves drafts out exactly as the site's `scripts/drafts.mjs` does, spacing included. A check of both over thousands of drafted variants of the fixture pages found them byte for byte the same. A unit test covers every block of six fixture pages: drafting a change leaves the live page unchanged, publishing the draft gives the direct edit, and discarding it gives the original.
 
-- **Descriptions:** `describe.js` compares the live views for **Changes**, what thomaswhite.me will show once published. The drafts are listed apart, under **Drafts (saved, left out of thomaswhite.me)**: new versions, new content, removals, drafts edited or discarded, and content taken off the live site. A draft commit's subject says so, for example `Home: draft add “Really.”`.
+- **Descriptions:** `describe.js` compares the live views for **Changes**, what thomaswhite.me will show once published. A draft that went was published, or discarded, by what the live views show. A new version's live element leaves when it is published, and new content arrives. Whole elements are compared, attributes deep inside included, so a draft that changed only a link's address or a caption is told apart correctly. The drafts are listed apart, under **Drafts (saved, left out of thomaswhite.me)**: new versions, new content, removals, drafts edited or discarded, and content taken off the live site. A draft commit's subject says so, for example `Home: draft add “Really.”`.
 - **Checks:** the check for locked parts ignores draft copies and live elements waiting on a new version. A paragraph or list item whose words are all `new` drafts is blocked, because the live page would keep an empty element: one draft or several between them, even inside an `<em>`. The fix is to make the whole element a draft. The site's CI checks the same rules.
 
 ## Checks before Save
@@ -244,6 +245,6 @@ Before the content-strategy merge into `ThomasWCode/ThomasWCode.github.io` (the 
 - Text merge never re-wraps lines; a long insertion lengthens one line (no CI rule limits line length).
 - A word written with `&nbsp;` would be saved with a plain space if that word is edited (the site has none).
 - Headings cannot be added; images cannot be added or replaced; the header, footer and `<head>` are never editable. Those stay Claude-session work.
-- A draft phrase stays within one run of text (not across a link or `<strong>`), and a draft can't hold another draft: a change inside one edits it.
+- A draft phrase stays within one run of text (not across a link or `<strong>`), and a draft can't be made around another: publish or discard the inner one first.
 - GitHub has no conditional branch delete: `edits` is checked just before it is deleted (after a merge, or when a load finds it merged), but a save from another device landing between the check and the delete, a second at most, would be lost with it.
 - Whether revoking one token also invalidates its refresh token is still to be seen live; if it does not, Sign out should default to "everywhere" (`setup.md`, live checks).
