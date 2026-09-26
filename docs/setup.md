@@ -15,6 +15,7 @@ Everything the owner does outside the code, in order, with what has been done. H
 | Worker deploy | `npx wrangler deploy` (session) | `https://site-editor-auth.thomaswhite.workers.dev`. |
 | Client secret | `GITHUB_HOMEPAGE_CLIENT_SECRET` user environment variable, piped to `wrangler secret put GITHUB_CLIENT_SECRET` (session) | Health check says "Client secret: set"; a test exchange with a bogus code returns `bad_verification_code`, so GitHub accepts the client ID and secret. |
 | Live checks 1 to 4 | The editor, with Tom signed in (26 September) | Signed in and authorised the App. "see" → "watch" on Physics & Ideas and Programming, saved as two one-line commits (no workflow ran), published as ThomasWCode/ThomasWCode.github.io-revised#34. The baseline workflow regenerated the Programming screenshot first, and one CI run went green. Merged with a merge commit, `edits` deleted, live on new.thomaswhite.me. |
+| Live check 8 | The editor, in Tom's session (26 September) | **Suggest with AI** answered from Groq end to end; the test edit was undone, so nothing was saved or pushed. |
 
 ### The GitHub App's settings
 
@@ -31,12 +32,15 @@ These are the values from the plan. A private App's settings can't be read throu
 
 ### Live checks (with the session)
 
-Checks 1 to 4 (sign-in, Save, Publish and Merge, the screenshot path) are done; see the table above.
+Checks 1 to 4 (sign-in, Save, Publish and Merge, the screenshot path) and 8 (Suggest with AI) are done; see the table above.
 
 5. Sign in from your phone and make an edit there; try a paste.
 6. **Sign out**, then the session checks whether the old refresh token still works at the Worker's `/refresh`. If it does, Sign out should default to "everywhere" (a one-line change in `src/editor.js`).
 7. Optionally, sign in with a different GitHub account: it should see "This editor is private".
-8. Press **Suggest with AI** in the Save dialog once the Groq key is in place (below), and check the suggestion before saving.
+
+Added with drafts:
+
+9. Try **Drafts** on a change you want anyway (a test change would sit on `edits` with your unpublished edits). Turn the toggle on and change a word: a dashed new version appears after the live text, which dims. Save, and the commit on `edits` adds the new version beside the live one. new.thomaswhite.me shows drafts, so once published there the new version stands in for the live one; thomaswhite.me will leave it out after the content-strategy merge. **Publish new version** in the panel, then Save, turns it into the plain edit.
 
 ### Tidy-up
 
@@ -77,7 +81,7 @@ GitHub → Settings → Applications → Authorized GitHub Apps → Homepage Sit
 
 ### Switching to the main site
 
-Before the content-strategy merge (the site repository's `docs/implementation-notes.md` §6), publish or discard everything pending in the editor, so nothing is left on the preview repository's `edits`. After it: install the App on `ThomasWCode/ThomasWCode.github.io`, set `active` to `"main"` in `src/config.js`, publish that change through a pull request, then make a one-word test edit through the editor. Details in [`how-it-works.md`](how-it-works.md), "Switching targets".
+Before the content-strategy merge (the site repository's `docs/implementation-notes.md` §6), publish or discard everything pending in the editor, so nothing is left on the preview repository's `edits`. Drafts may stay in the pages: they merge like any other markup. Just before merging, set the main repository's Settings → Pages → Source to **GitHub Actions** (§6 step 4). Its "Publish the live site" workflow then builds thomaswhite.me with drafts left out; with the old source, drafts would show there. After the merge: install the App on `ThomasWCode/ThomasWCode.github.io`, set `active` to `"main"` in `src/config.js`, publish that change through a pull request, then make a one-word test edit through the editor. Details in [`how-it-works.md`](how-it-works.md), "Switching targets".
 
 ### If Pages stops publishing
 
