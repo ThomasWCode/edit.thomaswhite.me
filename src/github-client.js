@@ -121,10 +121,16 @@ export function createGitHubClient({ target, fetch, getAccessToken, now = () => 
       return { commit, treeSha: commit.tree.sha, files };
     },
 
-    // A text file's exact bytes, decoded as UTF-8 (invalid UTF-8 throws).
+    // A text file's exact bytes, decoded as UTF-8 (invalid UTF-8 throws). The
+    // JSON form (base64) is always served by api.github.com, the only API host
+    // the CSP's connect-src allows.
     async getBlobText(sha) {
-      const response = await request("GET", `${repo}/git/blobs/${sha}`, { accept: "application/vnd.github.raw+json" });
-      const bytes = await response.arrayBuffer();
+      const blob = await json("GET", `${repo}/git/blobs/${sha}`);
+      if (blob.encoding !== "base64") {
+        throw new GitHubError({ status: 200, code: "unexpected", message: `The file came back as ${blob.encoding}, not base64.` });
+      }
+      const binary = atob(blob.content.replace(/\s/g, ""));
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
       return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     },
 

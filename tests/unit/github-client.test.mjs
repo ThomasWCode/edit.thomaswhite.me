@@ -160,13 +160,19 @@ test("the tree lists blobs only and a truncated tree is refused", async () => {
   await assert.rejects(client.getCommitTree("c"), (error) => error.code === "tree_truncated");
 });
 
-test("blobs are read raw and decoded as strict UTF-8", async () => {
+test("blobs are read as base64 JSON from api.github.com and decoded as strict UTF-8", async () => {
   const text = "<p>It’s ✨ “quoted” &amp; fine</p>\n";
-  const { client, calls } = setup([new Response(new TextEncoder().encode(text)), new Response(Uint8Array.from([0xff, 0xfe]))]);
+  const base64 = (bytes) => Buffer.from(bytes).toString("base64").replace(/(.{60})/g, "$1\n");
+  const { client, calls } = setup([
+    json(200, { sha: "b1", encoding: "base64", content: base64(new TextEncoder().encode(text)) }),
+    json(200, { sha: "b2", encoding: "base64", content: base64([0xff, 0xfe]) }),
+    json(200, { sha: "b3", encoding: "utf-8", content: "x" }),
+  ]);
   assert.equal(await client.getBlobText("b1"), text);
-  assert.equal(calls[0].headers.Accept, "application/vnd.github.raw+json");
+  assert.equal(calls[0].headers.Accept, "application/vnd.github+json");
   assert.equal(calls[0].url, `${REPO}/git/blobs/b1`);
   await assert.rejects(client.getBlobText("b2"), TypeError);
+  await assert.rejects(client.getBlobText("b3"), (error) => error.code === "unexpected");
 });
 
 test("pull request, checks, workflow and merge calls use the target's branch names", async () => {

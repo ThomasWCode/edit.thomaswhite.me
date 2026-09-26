@@ -47,7 +47,7 @@ The Worker answers `GET /` with `site-editor-auth is running. Client secret: set
 
 ## From a click to a one-line diff
 
-**Loading.** `publish-flow.load` reads `edits` if it exists, otherwise `main`, and that commit's whole tree (path → blob SHA). Files are read as blobs by SHA (`Accept: application/vnd.github.raw+json`, decoded as strict UTF-8), so the bytes always match the SHA kept for stale-file detection. The open page loads first; the rest follow in the background, four at a time, for their titles, draft counts and the site-wide checks.
+**Loading.** `publish-flow.load` reads `edits` if it exists, otherwise `main`, and that commit's whole tree (path → blob SHA). Files are read as blobs by SHA (the JSON form, base64, which `api.github.com` always serves itself; decoded as strict UTF-8), so the bytes always match the SHA kept for stale-file detection. The open page loads first; the rest follow in the background, four at a time, for their titles, draft counts and the site-wide checks.
 
 **Parsing** (`page-model.js`). Files must be LF (a `\r` is refused) and start with the three-line front matter. The front matter is blanked (every character but newlines becomes a space) rather than stripped, so parse5's offsets are file offsets. Every element under `main#main-content` gets a key: its element-child index path from `main` ("3.0.1"). `main` holds no scripts or comments (a test checks every fixture), so parse5's tree and the browser's agree. A page without front matter, without `main`, or with an element under `main` lacking an explicit end tag is read-only, as are the CV and the three redirects (`lockedFiles`).
 
