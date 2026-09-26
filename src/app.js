@@ -7,7 +7,18 @@ import { AuthNetworkError, SignedOutError } from "./auth.js";
 import { changedLines, checkPage, checkSite, curlQuotes, isExternalRedirect, siteContext } from "./checks.js";
 import { bodyText, commitMessageFor, describeFile, forAi, noteOf, summarise } from "./describe.js";
 import { confirmAction, openDialog, promptText } from "./dialogs.js";
-import { asDraft, discardDraft, draftAround, draftPhrase, makeDraft, markDraft, publishDraft } from "./drafting.js";
+import {
+  asDraft,
+  discardDraft,
+  draftAround,
+  draftPhrase,
+  hasWaitingVersion,
+  makeDraft,
+  markDraft,
+  publishDraft,
+  refuseWaitingChange,
+  WAITING,
+} from "./drafting.js";
 import { countLineChanges, lineHunks, trimEqualRuns, wordDiff } from "./diff-view.js";
 import { $, button, externalLink, h } from "./dom.js";
 import {
@@ -266,6 +277,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
       try {
         const result = commitTextEdit(entry.model, live.key, live.snapshot);
         if (!result.changed) return;
+        refuseWaitingChange(entry.model, result.model);
         // In draft mode the words are kept as the draft they will become, so a
         // reload mid-block never turns them into a live change.
         const kept = draftMode ? asDraft(entry.model, result.model) : result.model;
@@ -364,14 +376,14 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
       }
       // In draft mode a change to live text goes into a draft copy instead.
       let drafted = result.model;
-      if (draftMode) {
-        try {
-          drafted = asDraft(before, result.model);
-        } catch (error) {
-          // Refused as a draft: the words typed are shown for copying.
-          if (error instanceof EditRejectedError && !error.typedText) error.typedText = blockText(result.model, key);
-          throw error;
-        }
+      try {
+        // A live element with a new version waiting stays as it is.
+        refuseWaitingChange(before, result.model);
+        if (draftMode) drafted = asDraft(before, result.model);
+      } catch (error) {
+        // Refused: the words typed are shown for copying.
+        if (error instanceof EditRejectedError && !error.typedText) error.typedText = blockText(result.model, key);
+        throw error;
       }
       pushUndo(entry);
       if (drafted !== result.model) {
@@ -417,6 +429,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     try {
       result = operation(entry.model);
       const made = result && result.model ? result.model : result;
+      if (drafting === "copy" && made && made !== entry.model) refuseWaitingChange(entry.model, made);
       if (draftMode && drafting === "copy" && made && made !== entry.model) {
         const drafted = asDraft(entry.model, made);
         if (drafted !== made) {
@@ -1673,6 +1686,10 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     const section = h("section", { class: "panel-section" }, h("h2", {}, "Link"));
     section.append(h("p", {}, "Text: ", h("strong", {}, collapse(textOf(node)) || "(no text)")));
     if (entry.model.readOnly) return section;
+    if (hasWaitingVersion(entry.model, node)) {
+      section.append(h("p", {}, WAITING));
+      return section;
+    }
     section.append(hrefEditor(entry, key));
     const href = attribute(node, "href") || "";
     const external = /^[a-z]+:/i.test(href) || /\.pdf($|[?#])/i.test(href);
@@ -1691,6 +1708,10 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     const image = model.images.find((item) => item.key === key);
     if (!image) return null;
     const section = h("section", { class: "panel-section" }, h("h2", {}, image.gallery ? "Gallery photo" : "Image"));
+    if (!model.readOnly && hasWaitingVersion(model, image.node)) {
+      section.append(h("p", {}, WAITING));
+      return section;
+    }
     const field = (label, value, name, targetKey, multiline = false) => {
       const input = multiline
         ? h("textarea", { class: "text-input", rows: 3, "aria-label": label }, value || "")
