@@ -83,6 +83,12 @@ GitHub → Settings → Applications → Authorized GitHub Apps → Homepage Sit
 
 Before the content-strategy merge (the site repository's `docs/implementation-notes.md` §6), publish or discard everything pending in the editor, so nothing is left on the preview repository's `edits`. Drafts may stay in the pages: they merge like any other markup. Just before merging, set the main repository's Settings → Pages → Source to **GitHub Actions** (§6 step 4). Its "Publish the live site" workflow then builds thomaswhite.me with drafts left out; with the old source, drafts would show there. After the merge: install the App on `ThomasWCode/ThomasWCode.github.io`, set `active` to `"main"` in `src/config.js`, publish that change through a pull request, then make a one-word test edit through the editor. Details in [`how-it-works.md`](how-it-works.md), "Switching targets".
 
+Around the merge (just before or just after is fine), also add the Claude routine in §6 step 5. It is a scheduled Claude agent on the main repository that reads each batch of new commits, the editor's included, and reports:
+
+- anything to add or question;
+- anything inconsistent;
+- anything added only to the site that also belongs in `docs/record.md` or the CV.
+
 ### If Pages stops publishing
 
 This repository is private, and GitHub Pages from a private repository needs GitHub Pro (from the Student Developer Pack). If Pro lapses, both this editor and thomaswhite.me stop publishing; making this repository public would restore the editor (it holds no secrets).
