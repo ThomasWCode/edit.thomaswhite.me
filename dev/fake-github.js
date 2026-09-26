@@ -248,6 +248,7 @@ export async function createFakeGitHub({
       base: { ...pull.base },
       mergeable: pull.mergeable,
       mergeable_state: pull.mergeable_state,
+      merge_commit_sha: pull.merge_commit_sha || null,
       html_url: `https://github.com/${owner}/${repo}/pull/${pull.number}`,
       created_at: pull.created_at,
     };
@@ -378,6 +379,7 @@ export async function createFakeGitHub({
       if (!pull) return error(404, "Not Found");
       if (body.body !== undefined) pull.body = body.body;
       if (body.title !== undefined) pull.title = body.title;
+      if (body.state === "closed" && !pull.merged) pull.state = "closed";
       return json(200, pullJson(pull));
     }],
     ["GET", /^\/pulls\/(\d+)\/files$/, (match) => {
@@ -522,6 +524,25 @@ export async function createFakeGitHub({
     pulls: () => pulls.map(pullJson),
     checkRuns: (sha) => checkRuns.filter((run) => !sha || run.head_sha === sha),
     workflowRuns: () => workflowRuns.map(publicRun),
+    // Merges a pull request as the GitHub website would (merge commit; the
+    // branch stays, as delete_branch_on_merge is off on the site repositories).
+    async mergeOnGitHub(number) {
+      const response = await fetch(`${API}/repos/${owner}/${repo}/pulls/${number}/merge`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${[...validTokens][0]}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ merge_method: "merge" }),
+      });
+      return response.json();
+    },
+    // Closes a pull request without merging, as the GitHub website would.
+    async closeOnGitHub(number) {
+      const response = await fetch(`${API}/repos/${owner}/${repo}/pulls/${number}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${[...validTokens][0]}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ state: "closed" }),
+      });
+      return response.json();
+    },
     // Commits straight to a branch, as another device (or the bot) would.
     async commitAs(branch, changes, { bot = false, message = "Change from elsewhere" } = {}) {
       const head = refs.get(branch);

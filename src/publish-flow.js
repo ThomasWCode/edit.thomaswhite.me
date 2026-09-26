@@ -138,14 +138,21 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
   }
 
   // Loads the branch the editor works on: `edits` if it exists, else main.
+  // An `edits` holding nothing main lacks, with no pull request open, is
+  // deleted first: a pull request merged on GitHub itself leaves its branch
+  // behind, and loading it would show an older copy of the site.
   async function load() {
     return exclusive(async () => {
       set({ phase: "loading", notice: "" });
-      const branchHead = await client.getRef(target.branch);
+      let branchHead = await client.getRef(target.branch);
+      const pr = branchHead ? await client.findOpenPr() : null;
+      if (branchHead && !pr && (await client.compare(target.base, branchHead)).ahead_by === 0) {
+        await client.deleteBranch(target.branch);
+        branchHead = null;
+      }
       const head = branchHead || (await client.getRef(target.base));
       if (!head) throw new GitHubError({ status: 404, code: "not_found", message: `${target.base} was not found.` });
       const { files } = await client.getCommitTree(head);
-      const pr = branchHead ? await client.findOpenPr() : null;
       set({ head, onBranch: Boolean(branchHead), files, pr, phase: pr ? "checking" : "ready" });
       if (branchHead) await readBranchState();
       else set({ aheadBy: 0, behindBy: 0, changedPaths: [] });
@@ -156,56 +163,77 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
   // Commits `changes` ([{ path, text, loadedSha }]; loadedSha is null for a new
   // file) as one commit on `edits`. Returns { sha, files } where files maps
   // each saved path to its new blob SHA.
+  //
+  // A file whose blob on the current head already equals the text being saved
+  // is left out (a save whose response was lost, then retried), so a retry
+  // never commits the same change twice. Once the branch has moved, the save
+  // has happened: the follow-up reads can fail without failing it.
   async function save(changes, message) {
     return exclusive(async () => {
       set({ phase: "saving", notice: "" });
+      const newShas = new Map();
+      for (const change of changes) newShas.set(change.path, await gitBlobSha(change.text));
+      let sha;
+      let tree = null;
       for (let attempt = 1; ; attempt += 1) {
         let head = await client.getRef(target.branch);
-        let tree = null;
+        tree = null;
         if (!head) {
           const baseHead = await client.getRef(target.base);
           head = await client.createBranch(target.branch, baseHead);
         }
+        let pending = changes;
         if (head !== state.head) {
           ({ files: tree } = await client.getCommitTree(head));
-          const conflicts = changes
-            .filter((change) => (tree.get(change.path) ?? null) !== (change.loadedSha ?? null))
-            .map((change) => change.path);
+          const conflicts = [];
+          pending = [];
+          for (const change of changes) {
+            const current = tree.get(change.path) ?? null;
+            if (current === newShas.get(change.path)) continue;
+            if (current !== (change.loadedSha ?? null)) conflicts.push(change.path);
+            else pending.push(change);
+          }
           if (conflicts.length) {
             set({ phase: state.pr ? "checking" : "ready" });
             throw new SaveConflictError(conflicts, head);
           }
         }
+        if (!pending.length) {
+          sha = head;
+          break;
+        }
         try {
-          const { sha } = await client.commitFiles({
+          ({ sha } = await client.commitFiles({
             branch: target.branch,
             parentSha: head,
-            files: changes.map(({ path, text }) => ({ path, content: text })),
+            files: pending.map(({ path, text }) => ({ path, content: text })),
             message,
-          });
-          const files = new Map(tree || state.files);
-          const saved = new Map();
-          for (const change of changes) {
-            const blob = await gitBlobSha(change.text);
-            files.set(change.path, blob);
-            saved.set(change.path, blob);
-          }
-          set({ head: sha, onBranch: true, files });
-          await readBranchState();
-          const pr = state.pr || (await client.findOpenPr());
-          if (pr) {
-            await client.updatePrBody(pr.number, prBody(state.changedPaths));
-            set({ pr, phase: "checking", checks: [], checkedSha: null, notice: "Saved. The pull request is open, so its checks run again on this commit." });
-          } else {
-            set({ phase: "ready", notice: "Saved to the edits branch. Nothing runs on GitHub until you publish." });
-          }
-          return { sha, files: saved };
+          }));
+          break;
         } catch (error) {
           if (error instanceof GitHubError && error.code === "not_fast_forward" && attempt < 3) continue;
           set({ phase: state.pr ? "checking" : "ready" });
           throw error;
         }
       }
+
+      const files = new Map(tree || state.files);
+      for (const [path, blob] of newShas) files.set(path, blob);
+      set({ head: sha, onBranch: true, files });
+      let pr = state.pr;
+      let notice;
+      try {
+        await readBranchState();
+        pr = pr || (await client.findOpenPr());
+        if (pr) await client.updatePrBody(pr.number, prBody(state.changedPaths));
+        notice = pr
+          ? "Saved. The pull request is open, so its checks run again on this commit."
+          : "Saved to the edits branch. Nothing runs on GitHub until you publish.";
+      } catch {
+        notice = "Saved. GitHub didn't answer a follow-up request, so the branch summary may be behind until the next refresh.";
+      }
+      set(pr ? { pr, phase: "checking", checks: [], checkedSha: null, notice } : { phase: "ready", notice });
+      return { sha, files: new Map(newShas) };
     });
   }
 
@@ -274,8 +302,23 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
       await sleep(2_000);
       pr = await client.getPr(state.pr.number);
     }
+    // Merged or closed on GitHub itself: the interface reloads from the new state.
     if (pr.state !== "open") {
-      set({ pr: null, phase: pr.merged ? "published" : "ready", checks: [], notice: pr.merged ? "The pull request was merged on GitHub." : "The pull request was closed on GitHub." });
+      if (pr.merged) {
+        set({
+          pr: null,
+          phase: "published",
+          mergedSha: pr.merge_commit_sha || null,
+          mergedAt: now(),
+          aheadBy: 0,
+          behindBy: 0,
+          changedPaths: [],
+          checks: [],
+          notice: `The pull request was merged on GitHub. ${new URL(target.assets).host} updates in about a minute.`,
+        });
+      } else {
+        set({ pr: null, phase: "ready", checks: [], notice: "The pull request was closed on GitHub without merging." });
+      }
       return state;
     }
     const runs = await client.listCheckRuns(pr.head.sha);
@@ -324,20 +367,27 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
         }
         throw error;
       }
-      await client.deleteBranch(target.branch);
+      // Delete edits only if it is still the head that was merged: another tab
+      // may have saved on top meanwhile, and deleting would lose that commit.
+      const branchHead = await client.getRef(target.branch);
+      const newerSaves = Boolean(branchHead) && branchHead !== pr.head.sha;
+      if (branchHead && !newerSaves) await client.deleteBranch(target.branch);
+      const host = new URL(target.assets).host;
       set({
         phase: "published",
         pr: null,
         mergedSha: result.sha,
         mergedAt: now(),
-        onBranch: false,
+        onBranch: newerSaves,
         aheadBy: 0,
         behindBy: 0,
         changedPaths: [],
         checks: [],
-        notice: `Merged. ${new URL(target.assets).host} updates in about a minute.`,
+        notice: newerSaves
+          ? `Merged; ${host} updates in about a minute. The edits branch has newer saves, kept for the next publish.`
+          : `Merged. ${host} updates in about a minute.`,
       });
-      return { merged: true, sha: result.sha };
+      return { merged: true, sha: result.sha, newerSaves };
     });
   }
 

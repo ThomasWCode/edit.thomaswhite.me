@@ -231,6 +231,112 @@ test("one GitHub action at a time; nothing to publish when edits equals main", a
   assert.match(empty.flow.state.notice, /Nothing to publish/);
 });
 
+test("a save whose commit landed is a save, even if the follow-up reads fail", async () => {
+  let failCompare = false;
+  const { fake, flow } = await setup({
+    wrapFetch: (fetch) => async (url, init) => {
+      if (failCompare && String(url).includes("/compare/")) {
+        failCompare = false;
+        throw new TypeError("Failed to fetch");
+      }
+      return fetch(url, init);
+    },
+  });
+  const loaded = await flow.load();
+  failCompare = true;
+  const edit = await change("physics.html", "Thinking about things", "Thinking, briefly", loaded.files.get("physics.html"), fake);
+  const saved = await flow.save([edit], "one");
+  assert.equal(fake.head("edits"), saved.sha, "the commit is there");
+  assert.equal(flow.state.head, saved.sha);
+  assert.match(flow.state.notice, /follow-up/);
+});
+
+test("a save retried after its response was lost does not commit the same change twice", async () => {
+  let dropResponse = true;
+  const { fake, flow } = await setup({
+    wrapFetch: (fetch) => async (url, init) => {
+      const response = await fetch(url, init);
+      if (dropResponse && init.method === "PATCH" && String(url).endsWith("/git/refs/heads/edits")) {
+        dropResponse = false;
+        throw new TypeError("Failed to fetch"); // GitHub applied it; the answer never arrived
+      }
+      return response;
+    },
+  });
+  const loaded = await flow.load();
+  const edit = await change("physics.html", "Thinking about things", "Thinking, once", loaded.files.get("physics.html"), fake);
+  await assert.rejects(flow.save([edit], "one"), (error) => error.code === "network");
+  const head = fake.head("edits");
+  const commits = fake.requests.filter((request) => request.method === "POST" && request.path === "/git/commits").length;
+  const saved = await flow.save([edit], "one again");
+  assert.equal(saved.sha, head, "the retry recognises the change as saved");
+  assert.equal(fake.head("edits"), head);
+  assert.equal(fake.requests.filter((request) => request.method === "POST" && request.path === "/git/commits").length, commits, "no second commit");
+});
+
+test("a pull request merged or closed on GitHub itself is noticed", async () => {
+  const { fake, flow } = await setup();
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking elsewhere", loaded.files.get("physics.html"), fake)], "one");
+  await flow.publish();
+  await fake.mergeOnGitHub(1);
+  await flow.refreshChecks();
+  assert.equal(flow.state.phase, "published");
+  assert.equal(flow.state.pr, null);
+  assert.equal(flow.state.mergedSha, fake.head("main"));
+  assert.match(flow.state.notice, /merged on GitHub/);
+
+  // GitHub keeps the merged branch; the next load removes it and reads main.
+  assert.ok(fake.head("edits"));
+  await fake.commitAs("main", { "docs/record.md": `${fake.fileAt("main", "docs/record.md")}\nPushed from a Claude session.\n` });
+  const reloaded = await flow.load();
+  assert.equal(fake.head("edits"), null);
+  assert.equal(reloaded.onBranch, false);
+  assert.equal(reloaded.head, fake.head("main"));
+
+  // Closed without merging: the saves stay on edits for the next publish.
+  const closed = await setup();
+  const before = await closed.flow.load();
+  await closed.flow.save([await change("physics.html", "Thinking about things", "Thinking again", before.files.get("physics.html"), closed.fake)], "one");
+  await closed.flow.publish();
+  await closed.fake.closeOnGitHub(1);
+  await closed.flow.refreshChecks();
+  assert.equal(closed.flow.state.phase, "ready");
+  assert.equal(closed.flow.state.pr, null);
+  assert.match(closed.flow.state.notice, /closed on GitHub without merging/);
+  const kept = await closed.flow.load();
+  assert.equal(kept.onBranch, true);
+  assert.equal(closed.flow.state.aheadBy, 1);
+  assert.equal((await closed.flow.publish()).pr.number, 2, "publishing again opens a new pull request");
+});
+
+test("the merge keeps edits when another tab saved on top of the merged head", async () => {
+  let raceAfterMerge = false;
+  const { fake, flow } = await setup({
+    wrapFetch: (fetch, fakeRef) => async (url, init) => {
+      const response = await fetch(url, init);
+      if (raceAfterMerge && init.method === "PUT" && String(url).endsWith("/merge")) {
+        raceAfterMerge = false;
+        await fakeRef.commitAs("edits", { "docs/record.md": `${fakeRef.fileAt("edits", "docs/record.md")}\nSaved in another tab.\n` });
+      }
+      return response;
+    },
+  });
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking twice", loaded.files.get("physics.html"), fake)], "one");
+  await flow.publish();
+  assert.equal(await untilSettled(flow), "publishable");
+  const newer = () => fake.head("edits");
+  raceAfterMerge = true;
+  const result = await flow.merge();
+  assert.equal(result.merged, true);
+  assert.equal(result.newerSaves, true);
+  assert.ok(newer(), "edits is kept");
+  assert.match(fake.fileAt("edits", "docs/record.md"), /Saved in another tab/);
+  assert.equal(fake.requests.filter((request) => request.method === "DELETE").length, 0);
+  assert.match(flow.state.notice, /newer saves/);
+});
+
 test("summariseChecks takes each check's latest run and ignores others", () => {
   const runs = [
     { id: 1, name: "Static contracts and lint", status: "completed", conclusion: "failure" },
