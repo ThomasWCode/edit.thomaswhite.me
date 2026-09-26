@@ -88,8 +88,8 @@ Placeholders (`draft-note`, `draft-inline`) and `data-draft="check"` come from t
   - The copy's ids become `data-draft-id`, so no id is on the preview twice; publishing names them back.
   - The copy goes on lines of its own when the live element has its lines to itself, as the site's build cuts drafts. Otherwise it hugs the live element, so leaving it out or publishing it adds no whitespace.
   - When that element holds something the site pins (the h1, Analisa's words, a proof label), only the changed block is copied. The home page's portrait note shares its section with the h1, for example. If neither can be copied, the change is refused and what was typed is shown for copying.
-  - Until the new version is published or discarded, the live element is locked (with its reason in the panel) and dimmed in the preview.
-- **+** adds the paragraph or item as a `new` draft.
+  - Until the new version is published or discarded, the live element is locked (with its reason in the panel) and dimmed in the preview. When the Now section has a new version waiting, the Now helper sets that version, drafts on or off.
+- **+** adds the paragraph or item as a `new` draft, unless it lands inside a draft already. After an element that is itself a draft it lands outside it, so it gets its own marker.
 - **×** marks the block `remove`, without asking, since nothing leaves the live site until the removal is published.
 - **A change inside any draft** edits that draft.
 
@@ -115,7 +115,7 @@ Publishing a new version refuses if the element before it is no longer a live on
 **What thomaswhite.me will show.** `liveSource()` leaves drafts out exactly as the site's `scripts/drafts.mjs` does. A unit test covers every block of six fixture pages: drafting a change leaves the live page unchanged, publishing the draft gives the direct edit, and discarding it gives the original.
 
 - **Descriptions:** `describe.js` compares the live views for **Changes**, what thomaswhite.me will show once published. The drafts are listed apart, under **Drafts (saved, left out of thomaswhite.me)**: new versions, new content, removals, drafts edited or discarded, and content taken off the live site. A draft commit's subject says so, for example `Home: draft add “Really.”`.
-- **Checks:** the check for locked parts ignores draft copies and live elements waiting on a new version. A `new` phrase that is all its paragraph or list item holds is blocked, because the live page would keep an empty element; the fix is to make the whole element a draft. The site's CI checks the same rules.
+- **Checks:** the check for locked parts ignores draft copies and live elements waiting on a new version. A paragraph or list item whose words are all `new` drafts is blocked, because the live page would keep an empty element: one draft or several between them, even inside an `<em>`. The fix is to make the whole element a draft. The site's CI checks the same rules.
 
 ## Checks before Save
 
@@ -131,7 +131,7 @@ Blocking, mirroring the site's CI (`tests/static/*.test.mjs` in the site reposit
 - A local reference (a root path in `href`, `src`, `poster`, `data-full-src` or any `srcset` candidate; other URLs aren't checked) that is neither a page nor a file in the repository.
 - A `data-record` value that is not a `### slug` heading in the record (this is how a renamed heading in the Record tab is caught).
 
-Blocking, the editor's own: a link on a changed line to a missing `#anchor`; a relative link (the site writes every link from the root, and the local-reference check reads them that way; fix: the root form, resolved against the page's address); an emptied heading; an emptied Markdown file; any byte changed outside `main` or inside a locked block (the Now helper's line, draft copies and live elements waiting on a new version excepted); a `new` draft that is all its paragraph or list item holds (see "Drafts").
+Blocking, the editor's own: a link on a changed line to a missing `#anchor`; a relative link (the site writes every link from the root, and the local-reference check reads them that way; fix: the root form, resolved against the page's address); an emptied heading; an emptied Markdown file; any byte changed outside `main` or inside a locked block (the Now helper's line, draft copies and live elements waiting on a new version excepted); a paragraph or list item whose words are all `new` drafts (see "Drafts").
 
 Warnings (Save still allowed): more than one exclamation mark on a page; straight quotes typed (fix: curl them); a Now line changed without its month; the call to action shared by Home, Programming, Volunteering and Contact; an emptied paragraph; a school-year mention edited (check its `data-review`); a gallery `data-caption` that no longer matches its figcaption (fix: copy it).
 

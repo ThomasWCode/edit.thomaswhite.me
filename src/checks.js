@@ -285,15 +285,23 @@ export function checkPage(model, original, context) {
   }
 
   findings.push(...protectedChanges(model, original));
-  // As the site's contract: a new draft that is all its list item or paragraph
-  // holds would leave it empty on thomaswhite.me.
-  for (const draft of model.drafts) {
-    const parent = draft.node.parentNode;
-    if (draft.kind !== "new" || !parent || !["li", "p"].includes(parent.tagName)) continue;
-    if (collapse(textOf(parent)) === collapse(textOf(draft.node))) {
-      findings.push(finding(model, "block", "draft-alone", `This draft is all its ${parent.tagName === "li" ? "list item" : "paragraph"} holds, which would stay empty on the live site. Make the whole ${parent.tagName === "li" ? "item" : "paragraph"} a draft instead.`, draft.node));
+  // As the site's contract (emptiedByDrafts in its scripts/drafts.mjs): a list
+  // item or paragraph whose words are all new drafts, one or several, even
+  // inside an <em>, would be served empty on thomaswhite.me.
+  const isNew = (node) => attribute(node, "data-draft") === "new";
+  const liveWords = (node) =>
+    (node.childNodes || []).map((child) => (child.nodeName === "#text" ? child.value : isElement(child) && !isNew(child) ? liveWords(child) : "")).join("");
+  const emptied = (node, inNew) => {
+    for (const child of elementChildren(node)) {
+      const leftOut = inNew || isNew(child);
+      if (!leftOut && (child.tagName === "li" || child.tagName === "p") && collapse(textOf(child)) && !collapse(liveWords(child))) {
+        const what = child.tagName === "li" ? "list item" : "paragraph";
+        findings.push(finding(model, "block", "draft-alone", `This ${what}'s words are all drafts, so it would be empty on the live site. Make the whole ${what} a draft instead.`, child));
+      }
+      emptied(child, leftOut);
     }
-  }
+  };
+  if (model.main) emptied(model.main, false);
   findings.push(...warnings(model, original, lines));
   return dedupe(findings);
 }
