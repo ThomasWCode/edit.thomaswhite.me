@@ -70,6 +70,29 @@ function unitAround(model, start, end) {
   return best;
 }
 
+// The smallest editable block strictly around [start, end), with an end tag.
+function blockAround(model, start, end) {
+  let best = null;
+  for (const { node } of model.blocks) {
+    const location = node.sourceCodeLocation;
+    if (!location || !location.endTag || !(location.startOffset < start && end <= location.endOffset)) continue;
+    if (!best || location.endOffset - location.startOffset < best.sourceCodeLocation.endOffset - best.sourceCodeLocation.startOffset) best = node;
+  }
+  return best;
+}
+
+function contains(outer, node) {
+  for (let item = node; item; item = item.parentNode) if (item === outer) return true;
+  return false;
+}
+
+// Whether a copy of `node` would repeat what the site pins (the page's h1, a
+// quote, a fixed label): the preview would have it twice. The Updated line is
+// the Now helper's, and copies with its section.
+function holdsPinned(model, node) {
+  return model.blocks.some((block) => block.lock && block.lock !== LOCK_REASONS.nowUpdated && block.lock !== LOCK_REASONS.replaced && contains(node, block.node));
+}
+
 // The key of the innermost element whose source holds `offset`.
 function unitKeyAt(model, offset) {
   let best = null;
@@ -133,8 +156,10 @@ function draftCopy(source, node, kind) {
 
 // A change made to live content, kept as a draft instead: the smallest whole
 // element around the change stays as it is, and the changed version goes in a
-// copy straight after it, marked data-draft="replace". A change inside a draft
-// is kept as made. `before` and `after` are models of the same page.
+// copy straight after it, marked data-draft="replace". When that element holds
+// something the site pins, the changed block alone is copied (the portrait
+// note shares the home page's first section with its h1). A change inside a
+// draft is kept as made. `before` and `after` are models of the same page.
 export function asDraft(before, after) {
   if (after === before || after.source === before.source) return after;
   const a = before.source;
@@ -144,22 +169,19 @@ export function asDraft(before, after) {
   while (prefix < shortest && a[prefix] === b[prefix]) prefix += 1;
   let suffix = 0;
   while (suffix < shortest - prefix && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix += 1;
-  const unit = unitAround(before, prefix, a.length - suffix);
-  if (!unit) throw new EditRejectedError("This change can't be saved as a draft. Turn drafts off to make it, or ask for it in a Claude session.");
-  if (draftAround(before, unit)) return after;
-  // A copy must not repeat what the site pins (the page's h1, a quote, a fixed
-  // label): the preview would have it twice. The Updated line is the Now
-  // helper's, and copies with its section.
-  const within = (node) => {
-    for (let item = node; item; item = item.parentNode) if (item === unit) return true;
-    return false;
-  };
-  if (before.blocks.some((block) => block.lock && block.lock !== LOCK_REASONS.nowUpdated && block.lock !== LOCK_REASONS.replaced && within(block.node))) {
-    throw new EditRejectedError("A draft of this change would copy a locked part of the page. Turn drafts off to make it, or ask for it in a Claude session.");
-  }
-  // A change inside a phrase draft is a change to that draft.
+  const around = unitAround(before, prefix, a.length - suffix);
+  // A change inside a draft, or inside a phrase draft, is a change to that draft.
+  if (around && draftAround(before, around)) return after;
   const inner = before.nodeOf.get(unitKeyAt(before, prefix));
   if (inner && draftAround(before, inner)) return after;
+  const unit = [around, blockAround(before, prefix, a.length - suffix)].find((node) => node && !holdsPinned(before, node));
+  if (!unit) {
+    throw new EditRejectedError(
+      around
+        ? "A draft of this change would copy a locked part of the page. Turn drafts off to make it, or ask for it in a Claude session."
+        : "This change can't be saved as a draft. Turn drafts off to make it, or ask for it in a Claude session.",
+    );
+  }
   const location = unit.sourceCodeLocation;
   const changed = b.slice(location.startOffset, location.endOffset + (b.length - a.length));
   // On lines of its own when the live element has its lines to itself, as the
@@ -174,12 +196,16 @@ export function asDraft(before, after) {
   return apply(before, [{ start: location.endOffset, end: location.endOffset, text }]);
 }
 
-// Marks the element at `key` as a draft of `kind` ("new" or "remove").
+// Marks the element at `key` as a draft of `kind` ("new" or "remove"). What
+// the site's tests pin (the page's h1, Analisa's words) can't be taken off it.
 export function markDraft(model, key, kind) {
   if (!EDITOR_DRAFT_KINDS.has(kind) || kind === "replace") throw new EditRejectedError("Not a draft kind to mark.");
   const node = requireNode(model, key);
   const around = draftAround(model, node);
   if (around) throw new EditRejectedError("This is already part of a draft.");
+  if (model.blocks.some((block) => (block.lock === LOCK_REASONS.h1 || block.lock === LOCK_REASONS.analisa) && contains(node, block.node))) {
+    throw new EditRejectedError("This holds the page heading or a quoted testimonial, which the site's tests need on the live page.");
+  }
   return apply(model, [setAttributeSplice(model, node, "data-draft", kind)]);
 }
 

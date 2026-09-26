@@ -75,6 +75,23 @@ test("links, the Now month and captions: the smallest whole element is the draft
   const captioned = setAttribute(gallery, image.gallery.buttonKey, "data-caption", "A new caption");
   const figure = draftsOf(asDraft(gallery, captioned), "replace")[0];
   assert.ok(["figure", "li"].includes(figure.node.tagName), figure.node.tagName);
+
+  // The portrait note shares the first section with the page's h1, and a
+  // quote's attribution sits inside the pinned quote: each block alone is copied.
+  for (const [path, from, to, tag] of [
+    ["index.html", "Hello from London :)", "Hello from London!", "span"],
+    ["testimonials.html", "Analisa Plehn, St John’s Garden", "Analisa Plehn, St John’s Garden, London", "footer"],
+  ]) {
+    const model = loadModel(path);
+    const edited = editBlock(model, from, from, to);
+    const drafted = asDraft(model, edited);
+    const [own] = draftsOf(drafted, "replace");
+    assert.equal(own.node.tagName, tag, `${path}: just the ${tag}`);
+    assert.equal(drafted.blocks.filter((block) => block.lock === LOCK_REASONS.h1).length, model.blocks.filter((block) => block.lock === LOCK_REASONS.h1).length);
+    assert.equal(liveSource(drafted), liveSource(model), `${path}: the live page is untouched`);
+    assert.equal(publishDraft(drafted, own.key).source, edited.source, `${path}: publishing is the direct edit`);
+    assert.equal(discardDraft(drafted, own.key).source, model.source, `${path}: discarding restores it`);
+  }
 });
 
 test("marking whole elements: new keeps them off the site, remove keeps them on until published", () => {
@@ -94,6 +111,14 @@ test("marking whole elements: new keeps them off the site, remove keeps them on 
   const label = blockKeyStarting(physics, "Dennis E. Taylor");
   assert.equal(physics.nodeOf.get(unitOf(physics, label)).tagName, "li", "a dated item's label drafts the whole item");
   assert.throws(() => markDraft(hidden, draftsOf(hidden, "new")[0].key, "remove"), EditRejectedError);
+
+  // The site's tests need the page heading and Analisa's words on the live page.
+  for (const [path, reason] of [["index.html", LOCK_REASONS.h1], ["testimonials.html", LOCK_REASONS.analisa]]) {
+    const model = loadModel(path);
+    const pinned = model.blocks.find((block) => block.lock === reason);
+    assert.throws(() => makeDraft(model, pinned.key), /page heading or a quoted testimonial/, `${path}: ${reason}`);
+    assert.throws(() => markDraft(model, unitOf(model, pinned.key), "remove"), /page heading or a quoted testimonial/);
+  }
 });
 
 test("phrases: words in one run of text, wrapped; the whole text marks the block", () => {
