@@ -260,6 +260,84 @@ test("commit messages and pull requests: generated, editable, or suggested by AI
   expect(JSON.stringify(worker.describes)).not.toContain("private fact");
 });
 
+test("drafts: in draft mode a change to live text waits as a new version, and publishing it makes the change", async ({ page }) => {
+  const fake = await createFake();
+  await openEditor(page, fake);
+  const toggle = page.locator("#draft-mode-button");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#status-line")).toContainText("Drafts on");
+
+  const live = frame(page).locator("p", { hasText: "Pick whatever sounds a bit interesting." }).first();
+  await typeAtEnd(page, live, " Really.");
+  await page.keyboard.press("Enter");
+  const copy = frame(page).locator('p[data-draft="replace"]');
+  await expect(copy).toHaveText("Pick whatever sounds a bit interesting. Really.");
+  await expect(frame(page).locator("p:not([data-draft])", { hasText: "Pick whatever" })).toHaveText("Pick whatever sounds a bit interesting.");
+  // The page's list names it a new version, to publish, not a placeholder to finish.
+  const listed = page.locator("#panel .draft-item", { hasText: "Really." });
+  await expect(listed.locator(".tag")).toHaveText("New version");
+  await expect(listed.getByRole("button", { name: "Publish" })).toBeVisible();
+  await save(page);
+  const saved = fake.fileAt("edits", "index.html");
+  expect(saved).toContain(
+    '<p>Pick whatever sounds a bit interesting.</p>\n            <p data-draft="replace">Pick whatever sounds a bit interesting. Really.</p>\n',
+  );
+  const commit = fake.commit(fake.head("edits"));
+  expect(commit.message.split("\n")[0]).toBe("Home: draft add “Really.”");
+
+  await toggle.click();
+  await copy.click();
+  await page.locator(".edit-toolbar button", { hasText: "Publish new version" }).click();
+  await expect(frame(page).locator("[data-draft]")).toHaveCount(fake.fileAt("main", "index.html").match(/data-draft/g)?.length ?? 0);
+  await save(page);
+  expect(fake.fileAt("edits", "index.html")).toBe(
+    readFixture("index.html").replace("<p>Pick whatever sounds a bit interesting.</p>", "<p>Pick whatever sounds a bit interesting. Really.</p>"),
+  );
+});
+
+test("drafts: whole paragraphs and chosen words kept off the live site, and × marking a removal", async ({ page }) => {
+  const fake = await createFake();
+  await openEditor(page, fake);
+  const paragraph = frame(page).locator("p", { hasText: "Pick whatever sounds a bit interesting." });
+  await paragraph.click();
+  await page.locator("#panel").getByRole("button", { name: "Make this a draft" }).click();
+  await expect(frame(page).locator('p[data-draft="new"]')).toHaveText("Pick whatever sounds a bit interesting.");
+  await page.locator("#undo-button").click();
+  await expect(frame(page).locator('p[data-draft="new"]')).toHaveCount(0);
+
+  // Select "interesting" by keyboard, then keep just that word off the live site.
+  await typeAtEnd(page, frame(page).locator("p", { hasText: "Pick whatever sounds a bit interesting." }), "");
+  await page.keyboard.press("ArrowLeft");
+  for (let index = 0; index < "interesting".length; index += 1) await page.keyboard.press("Shift+ArrowLeft");
+  await page.locator("#panel").getByRole("button", { name: "Keep them off the live site" }).click();
+  await expect(frame(page).locator('span[data-draft="new"]')).toHaveText("interesting");
+
+  // Words selected in one block never apply to the next block clicked.
+  await typeAtEnd(page, frame(page).locator("p", { hasText: "Anything big, small" }), "");
+  for (let index = 0; index < "need.".length; index += 1) await page.keyboard.press("Shift+ArrowLeft");
+  await frame(page).locator("p", { hasText: "Physics student, volunteer developer" }).click();
+  await page.locator("#panel").getByRole("button", { name: "Keep them off the live site" }).click();
+  await expect(page.locator("#toast")).toContainText("Select some words in this block first");
+  await expect(frame(page).locator('span[data-draft="new"]')).toHaveCount(1);
+
+  await page.locator("#draft-mode-button").click();
+  const item = frame(page).locator("li", { hasText: "Building VAXTB" });
+  await item.locator(".compact-list-text").click();
+  await page.locator(".edit-toolbar button", { hasText: "×" }).click();
+  await expect(page.locator("#confirm-dialog")).toBeHidden();
+  await expect(frame(page).locator('li[data-draft="remove"]')).toContainText("Building VAXTB");
+  // + after a block that is itself a draft lands outside it, so the new item is a draft of its own.
+  await frame(page).locator('li[data-draft="remove"] .compact-list-text').click();
+  await page.locator(".edit-toolbar button", { hasText: "+" }).click();
+  await expect(frame(page).locator('li[data-draft="new"]')).toContainText("New item");
+  await save(page);
+  const saved = fake.fileAt("edits", "index.html");
+  expect(saved).toContain('<p>Pick whatever sounds a bit <span data-draft="new">interesting</span>.</p>');
+  expect(saved).toMatch(/<li data-draft="remove">\s*<span class="compact-list-label">VAXTB<\/span>/);
+  expect(saved).toMatch(/<li data-draft="new">\s*<span class="compact-list-label">/);
+});
+
 test("a baseline bot commit does not block a save; another device's edit to the page does", async ({ page }) => {
   const fake = await createFake();
   await openEditor(page, fake);
@@ -354,6 +432,20 @@ test("typing in a block that was never finished survives a reload", async ({ pag
   await page.reload();
   await expect(frame(page).locator("p", { hasText: "Pick whatever" })).toHaveText("Pick whatever sounds a bit interesting. Unfinished");
   await expect(page.locator("#save-button")).toHaveText("Save (1)");
+
+  // In draft mode (remembered for the tab) the unfinished words are mirrored as
+  // the draft they will become, so even a crash can't make them live.
+  await page.locator("#draft-mode-button").click();
+  const anything = frame(page).locator("p", { hasText: "Anything big, small" });
+  await typeAtEnd(page, anything, " Or small.");
+  await page.waitForTimeout(1200);
+  const mirrored = await page.evaluate(() => JSON.parse(globalThis.sessionStorage.getItem("siteEditor.working.v1:ThomasWCode/ThomasWCode.github.io-revised:index.html")).working);
+  expect(mirrored).toMatch(/<p data-draft="replace">\s*Anything big, small[^<]*what you need\. Or small\.\s*<\/p>/);
+  expect(mirrored).toMatch(/<p>\s*Anything big, small[^<]*what you need\.\s*<\/p>/);
+  await page.reload();
+  await expect(page.locator("#draft-mode-button")).toHaveAttribute("aria-pressed", "true");
+  await expect(frame(page).locator('p[data-draft="replace"]')).toContainText("what you need. Or small.");
+  await expect(frame(page).locator("p:not([data-draft])", { hasText: "Anything big, small" })).not.toContainText("Or small.");
 });
 
 test("unsaved Record edits made to an older version are kept aside, not overwritten", async ({ page }) => {

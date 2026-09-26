@@ -39,6 +39,7 @@ export const LOCK_REASONS = {
   analisa: "Analisa's testimonial is quoted word for word, and a site test checks it.",
   nowUpdated: "This line is set by the Now helper: choose the month there.",
   proofLabel: "Proof-block subheadings are fixed labels.",
+  replaced: "A new version of this is saved as a draft just below it. Edit the draft, or discard it to change this.",
   form: "The contact form is wired to Formspree and the site's script.",
   button: "Buttons are wired to the site's script.",
   media: "Video and audio players can't be edited here.",
@@ -122,9 +123,15 @@ function skippedReason(node) {
   return LOCK_REASONS.other;
 }
 
+// The kinds (the site's AGENTS.md, § Drafts): "note" and "inline" placeholders
+// to write, "check" sentences to approve, and the editor's own "new",
+// "replace" and "remove" (drafting.js).
+export const EDITOR_DRAFT_KINDS = new Set(["new", "replace", "remove"]);
+
 function draftKind(node) {
   if (!hasAttribute(node, "data-draft")) return null;
-  if (attribute(node, "data-draft") === "check") return "check";
+  const value = attribute(node, "data-draft");
+  if (value === "check" || EDITOR_DRAFT_KINDS.has(value)) return value;
   const classes = classTokens(node);
   if (classes.includes("draft-inline")) return "inline";
   if (classes.includes("draft-note")) return "note";
@@ -205,7 +212,25 @@ function lockReasonFor(model, node) {
   if (chain.some((item) => item.tagName === "h4") && chain.some((item) => classTokens(item).includes("proof-block"))) {
     return LOCK_REASONS.proofLabel;
   }
+  const replacedBy = (item) => {
+    const next = nextElementSibling(item);
+    return Boolean(next) && attribute(next, "data-draft") === "replace";
+  };
+  if (chain.some(replacedBy)) return LOCK_REASONS.replaced;
   return null;
+}
+
+export function nextElementSibling(node) {
+  if (!node || !node.parentNode) return null;
+  const siblings = elementChildren(node.parentNode);
+  return siblings[siblings.indexOf(node) + 1] || null;
+}
+
+export function previousElementSibling(node) {
+  if (!node || !node.parentNode) return null;
+  const siblings = elementChildren(node.parentNode);
+  const index = siblings.indexOf(node);
+  return index > 0 ? siblings[index - 1] : null;
 }
 
 // The list item or plain paragraph that "+" and "×" act on. Paragraphs with a
@@ -300,8 +325,12 @@ function collectMarkers(model) {
         addRole(model, child, button ? "gallery" : "image");
       }
       if (hasAttribute(child, "data-updated") && !model.now) {
-        const line = findDescendant(child, (item) => classTokens(item).includes("now-updated"));
-        model.now = { key, updated: attribute(child, "data-updated"), lineKey: line ? model.keyOf.get(line) : null };
+        // A new version drafted straight after the live section is the one the
+        // Now helper sets: the live one waits, unchanged, until it is published.
+        const next = nextElementSibling(child);
+        const section = next && attribute(next, "data-draft") === "replace" && hasAttribute(next, "data-updated") ? next : child;
+        const line = findDescendant(section, (item) => classTokens(item).includes("now-updated"));
+        model.now = { key: model.keyOf.get(section), updated: attribute(section, "data-updated"), lineKey: line ? model.keyOf.get(line) : null };
       }
       visit(child);
     }

@@ -15,11 +15,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOST = "127.0.0.1";
 const LOCAL_WORKER = "http://127.0.0.1:8787";
 
-const SERVED_FILES = new Set(["index.html", "editor.css", "frame.css", "robots.txt"]);
+const SERVED_FILES = new Set(["index.html", "editor.css", "frame.css", "robots.txt", "favicon.ico", "favicon.png"]);
 const SERVED_DIRECTORIES = ["src/", "vendor/", "dev/"];
 const TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
+  ".ico": "image/x-icon",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".md": "text/markdown; charset=utf-8",

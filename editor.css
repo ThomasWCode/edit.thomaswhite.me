@@ -766,6 +766,35 @@ textarea.text-input {
   color: #6b4a00;
 }
 
+.tag--draft-new,
+.tag--draft-replace {
+  background: var(--terracotta-light);
+  color: var(--terracotta-ink);
+}
+
+.tag--draft-remove {
+  background: var(--gold-light);
+  color: #6b4a00;
+}
+
+/* Draft mode on: every change is kept as a draft, so the toggle stands out. */
+.draft-toggle[aria-pressed="true"] {
+  border-color: var(--terracotta);
+  background: var(--terracotta-light);
+  color: var(--terracotta-ink);
+}
+
+.panel-drafts {
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.panel-drafts h3 {
+  margin: 0 0 0.25rem;
+  font-size: 0.8125rem;
+}
+
 .draft-list {
   display: grid;
   gap: 0.35rem;

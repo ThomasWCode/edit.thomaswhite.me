@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
-const PUBLISHED = new Set(["index.html", "editor.css", "frame.css", "robots.txt", "CNAME", "_config.yml", "src/", "vendor/"]);
+const PUBLISHED = new Set(["index.html", "editor.css", "frame.css", "robots.txt", "favicon.ico", "favicon.png", "CNAME", "_config.yml", "src/", "vendor/"]);
 const root = new URL("../../", import.meta.url);
 
 async function excluded() {

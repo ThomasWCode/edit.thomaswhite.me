@@ -16,8 +16,9 @@ import {
   summarise,
   wordChange,
 } from "../../src/describe.js";
+import { asDraft, discardDraft, draftPhrase, makeDraft, publishDraft } from "../../src/drafting.js";
 import { completeDraft, setAttribute, setNowUpdated } from "../../src/edits.js";
-import { collapse, textOf } from "../../src/page-model.js";
+import { blockText, collapse, textOf } from "../../src/page-model.js";
 import { addAfter, removeBlock } from "../../src/structure.js";
 import { blockKeyStarting, editBlock, loadModel, readFixture } from "../support/fixtures.mjs";
 
@@ -161,6 +162,52 @@ test("the pull request description: note, refreshed changes, footer, and the gen
   const escaped = prDescription({ files: [risky], autoTitle: "x" });
   assert.match(escaped, /@​codex \\<script\\>/);
   assert.ok(!escaped.includes("@codex"), "no mention reaches GitHub");
+});
+
+test("drafts: saved, published, discarded and taken off the live site are told apart", () => {
+  const drafted = asDraft(home, editBlock(home, "Pick whatever", "interesting", "fascinating"));
+  const saved = described(home, drafted);
+  assert.deepEqual(saved.items.map((item) => item.kind), ["draft-added"], "nothing live changed");
+  assert.equal(summarise([saved]), "Home: draft “interesting.” → “fascinating.”");
+  assert.match(itemLine(saved.items[0]), /^Draft of a new version \(not live\): “Pick whatever/);
+
+  const copy = drafted.drafts.find((draft) => draft.kind === "replace").key;
+  const published = described(drafted, publishDraft(drafted, copy));
+  assert.equal(summarise([published]), "Home: “interesting.” → “fascinating.”", "publishing is the live change itself");
+  assert.deepEqual(described(drafted, discardDraft(drafted, copy)).items.map((item) => item.kind), ["draft-discarded"]);
+
+  // A new version that changed only a link's address has the live link's words:
+  // whole elements, not words, tell publishing from discarding.
+  const reading = home.links.find((link) => link.href === "/physics/#reading");
+  const linkDraft = asDraft(home, setAttribute(home, reading.key, "href", "/physics/#questions"));
+  const linkCopy = linkDraft.drafts.find((draft) => draft.kind === "replace").key;
+  assert.deepEqual(described(linkDraft, discardDraft(linkDraft, linkCopy)).items.map((item) => item.kind), ["draft-discarded"]);
+  assert.ok(!described(linkDraft, publishDraft(linkDraft, linkCopy)).items.some((item) => item.kind === "draft-discarded"));
+
+  // A new version of a gallery figure differs only in a button's caption,
+  // deep inside it: publishing is the caption change, with nothing discarded.
+  const gallery = loadModel("gallery.html");
+  const photo = gallery.images.find((item) => item.gallery);
+  const captionDraft = asDraft(gallery, setAttribute(gallery, photo.gallery.buttonKey, "data-caption", "A new caption"));
+  const figureCopy = captionDraft.drafts.find((draft) => draft.kind === "replace").key;
+  assert.ok(!described(captionDraft, publishDraft(captionDraft, figureCopy)).items.some((item) => item.kind === "draft-discarded"));
+  assert.deepEqual(described(captionDraft, discardDraft(captionDraft, figureCopy)).items.map((item) => item.kind), ["draft-discarded"]);
+
+  // A new phrase whose words appear all over the page: discarded, then published.
+  const pick = blockKeyStarting(home, "Pick whatever");
+  const at = blockText(home, pick).indexOf(" a bit") + 1;
+  const phrase = draftPhrase(home, pick, at, at + 1, "new");
+  const phraseKey = phrase.drafts.find((draft) => draft.kind === "new").key;
+  assert.deepEqual(described(phrase, discardDraft(phrase, phraseKey)).items.map((item) => item.kind), ["draft-discarded"]);
+  assert.ok(!described(phrase, publishDraft(phrase, phraseKey)).items.some((item) => item.kind === "draft-discarded"));
+
+  const off = described(home, makeDraft(home, blockKeyStarting(home, "Pick whatever")));
+  assert.deepEqual(off.items.map((item) => item.kind), ["unpublished"]);
+  assert.equal(summarise([off]), "Home: take “Pick whatever sounds a bit…” off the live site");
+
+  const body = prDescription({ files: [saved, off], autoTitle: "x" });
+  assert.ok(body.indexOf("### Changes") < body.indexOf("### Drafts (saved, left out of thomaswhite.me)"), "live changes, then drafts");
+  assert.match(body, /### Drafts \(saved, left out of thomaswhite\.me\)\n\n\*\*Home\*\*/);
 });
 
 test("forAi: published changes as lines, private files as a count", () => {

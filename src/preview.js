@@ -57,6 +57,7 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
   let model = null;
   let doc = null;
   let editing = null;
+  let lastWords = null;
   let selected = null;
   let toolbar = null;
   let toolbarFor = null;
@@ -98,6 +99,8 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
   function startEditing(block, { caretAtEnd = false } = {}) {
     if (editing === block) return;
     finishEditing();
+    // Words selected in another block are not this block's.
+    if (lastWords && lastWords.key !== block.getAttribute("data-edit-key")) lastWords = null;
     block.setAttribute("contenteditable", "true");
     block.spellcheck = true;
     editing = block;
@@ -133,6 +136,30 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
 
   function wire() {
     const options = { capture: true };
+    // The last words selected in the block being edited, kept for the panel's
+    // draft buttons (clicking one moves focus out of the frame but leaves the
+    // frame's selection alone). A caret placed in the block drops them.
+    doc.addEventListener("selectionchange", () => {
+      const selection = doc.getSelection();
+      if (!editing || !selection || !editing.contains(selection.anchorNode) || !editing.contains(selection.focusNode)) return;
+      if (selection.isCollapsed) {
+        lastWords = null;
+        return;
+      }
+      const walker = doc.createTreeWalker(editing, NodeFilter.SHOW_TEXT);
+      const range = selection.getRangeAt(0);
+      let offset = 0;
+      let start = null;
+      let end = null;
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (node === range.startContainer) start = offset + range.startOffset;
+        if (node === range.endContainer) end = offset + range.endOffset;
+        offset += node.data.length;
+      }
+      if (start !== null && end !== null && end > start) {
+        lastWords = { key: editing.getAttribute("data-edit-key"), start, end, text: selection.toString() };
+      }
+    });
     doc.addEventListener(
       "mousedown",
       (event) => {
@@ -144,8 +171,14 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
           finishEditing();
           return;
         }
-        if (block) startEditing(block);
-        else finishEditing();
+        if (block) {
+          startEditing(block);
+          // Focus it before the click's own handling places the caret. Firefox
+          // otherwise leaves focus on the frame's body when the click follows
+          // one on the editor's controls (the Drafts toggle, Undo), and typing
+          // goes nowhere.
+          if (doc.activeElement !== block) block.focus({ preventScroll: true });
+        } else finishEditing();
       },
       options,
     );
@@ -290,6 +323,7 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
     const previous = iframe.contentDocument;
     const token = (renderToken += 1);
     editing = null;
+    lastWords = null;
     model = next;
     doc = null;
     pendingFocus = { focusKey, flashKey, selectAll, scroll };
@@ -429,5 +463,8 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
       if (!editing || !editing.isConnected) return null;
       return { key: editing.getAttribute("data-edit-key"), snapshot: snapshotFromDom(editing) };
     },
+    // { key, start, end, text } of the last words selected in a block, offsets
+    // counted over the block's text as the page model has it; null if none.
+    lastSelection: () => lastWords,
   };
 }

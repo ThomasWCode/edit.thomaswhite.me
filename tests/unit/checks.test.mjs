@@ -3,7 +3,8 @@ import { test } from "node:test";
 import { changedLines, checkPage, checkSite, curlQuotes, isExternalRedirect, siteContext } from "../../src/checks.js";
 import { lineHunks, trimEqualRuns, wordDiff } from "../../src/diff-view.js";
 import { setAttribute, setNowUpdated } from "../../src/edits.js";
-import { buildPageModel } from "../../src/page-model.js";
+import { draftPhrase } from "../../src/drafting.js";
+import { blockText, buildPageModel } from "../../src/page-model.js";
 import { blockKeyStarting, editBlock, loadModel, PAGE_FILES, renderedSnapshot, siteFiles } from "../support/fixtures.mjs";
 import { commitTextEdit } from "../../src/edits.js";
 
@@ -201,4 +202,19 @@ test("the Save dialog's word runs, trimmed context and line hunks", () => {
   assert.equal(hunks.length, 2);
   assert.deepEqual(hunks[0], { oldStart: 1, newStart: 1, rows: [{ type: " ", text: "1" }, { type: "-", text: "2" }, { type: "+", text: "two" }, { type: " ", text: "3" }] });
   assert.equal(lineHunks(before, after, 3).length, 1, "close changes merge into one hunk");
+});
+
+test("a paragraph whose words are all new drafts is blocked, across several drafts and through wrappers", () => {
+  const home = originals.get("index.html");
+  const key = blockKeyStarting(home, "Pick whatever");
+  const text = blockText(home, key);
+  const first = draftPhrase(home, key, 0, text.indexOf(" a bit"), "new");
+  assert.ok(!codes(check(first)).includes("draft-alone"), "words are left");
+  const both = draftPhrase(first, key, text.indexOf("a bit"), text.length, "new");
+  assert.deepEqual(codes(check(both), "block"), ["draft-alone"], "two drafts between them");
+  const wrapped = buildPageModel(
+    home.source.replace("<p>Pick whatever sounds a bit interesting.</p>", '<p><em><span data-draft="new">Pick whatever sounds a bit interesting.</span></em></p>'),
+    { path: home.path },
+  );
+  assert.ok(codes(check(wrapped), "block").includes("draft-alone"), "inside a wrapper");
 });

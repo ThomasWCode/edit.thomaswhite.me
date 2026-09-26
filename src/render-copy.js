@@ -46,6 +46,12 @@ export function renderCopy(model, { assetsOrigin, editorOrigin }) {
   };
   removeAll(model.document);
 
+  // data-editor tells the site's stylesheet this is the editor's copy, which
+  // shows a live element and the new version drafted after it side by side.
+  const html = findElement(model.document, "html");
+  const htmlStart = html && html.sourceCodeLocation && html.sourceCodeLocation.startTag;
+  if (htmlStart) splices.push({ start: htmlStart.startOffset + "<html".length, end: htmlStart.startOffset + "<html".length, text: " data-editor" });
+
   const head = findElement(model.document, "head");
   const headStart = head && head.sourceCodeLocation && head.sourceCodeLocation.startTag;
   const opening =

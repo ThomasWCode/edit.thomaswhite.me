@@ -26,6 +26,7 @@ Browser modules (`src/*.js`) load in the page; files ending in `.mjs` (scripts, 
 | `render-copy.js` | The copy of a page the frame shows. |
 | `snapshot.js`, `text-merge.js`, `sequence-diff.js`, `splice.js`, `edits.js` | Turning a typed change into the smallest source change. |
 | `structure.js` | Adding and removing paragraphs and list items. |
+| `drafting.js` | Drafts: changes kept off thomaswhite.me until published, publishing and discarding them, and the page as thomaswhite.me will serve it. |
 | `checks.js` | The pre-save checks. |
 | `diff-view.js` | The Save dialog's word runs and line hunks. |
 | `describe.js` | What changed, in words: commit messages, pull request titles and descriptions, and what the AI suggestions may see. |
@@ -57,9 +58,9 @@ The Worker answers `GET /` with `site-editor-auth is running. Client secret: set
 
 **Locks**, each with its reason in the panel: everything outside `main` (the shared header and footer); the `h1` (the test manifest and the status-page monitor pin it); any block containing "I was honestly so impressed" (Analisa's words are contract-tested); the Now section's "Updated Month Year" line (set by the Now helper); proof-block `h4` labels; forms, buttons and media.
 
-**The preview** (`render-copy.js`, `preview.js`). The copy is spliced, never re-serialised: every `script`, `noscript`, `base` and `meta http-equiv` removed; a `<meta http-equiv="Content-Security-Policy" content="script-src 'none'; form-action 'none'">` and `<base href="<site>/">` first in `<head>`; `frame.css` last in `<head>` by absolute URL; `data-edit-key` on every element under `main`, `data-edit-role` (block, locked, draft-note, draft-inline, draft-check, link, image, gallery) where it applies, and `tabindex="0"` on editable blocks and images. It is set as the iframe's `srcdoc`, so it shares the editor's origin and CSP (`frame-src 'self'`; `base-uri` names both site origins). There is deliberately no `sandbox` attribute: WebKit does not deliver events to listeners the parent attaches inside a sandboxed frame without `allow-scripts` (WebKit bug 218086), which would break editing on an iPhone. The frame runs no script anyway. Listeners are attached when the frame's document is parsed (`DOMContentLoaded`), not at `load`, so a click on the visible page is never lost while images load; scroll and focus are restored at `load`, instantly, because the site sets `scroll-behavior: smooth`. `frame.css` also hides the site's phone menu at 1024 pixels and below, which the site's own script would have closed on load.
+**The preview** (`render-copy.js`, `preview.js`). The copy is spliced, never re-serialised: every `script`, `noscript`, `base` and `meta http-equiv` removed; a `<meta http-equiv="Content-Security-Policy" content="script-src 'none'; form-action 'none'">` and `<base href="<site>/">` first in `<head>`; `frame.css` last in `<head>` by absolute URL; `data-edit-key` on every element under `main`, `data-edit-role` (block, locked, draft-note, draft-inline, draft-check, draft-new, draft-replace, draft-remove, link, image, gallery) where it applies, `tabindex="0"` on editable blocks and images, and `data-editor` on `<html>` (the site's stylesheet then shows a live element and its drafted new version side by side; see "Drafts"). It is set as the iframe's `srcdoc`, so it shares the editor's origin and CSP (`frame-src 'self'`; `base-uri` names both site origins). There is deliberately no `sandbox` attribute: WebKit does not deliver events to listeners the parent attaches inside a sandboxed frame without `allow-scripts` (WebKit bug 218086), which would break editing on an iPhone. The frame runs no script anyway. Listeners are attached when the frame's document is parsed (`DOMContentLoaded`), not at `load`, so a click on the visible page is never lost while images load; scroll and focus are restored at `load`, instantly, because the site sets `scroll-behavior: smooth`. `frame.css` also hides the site's phone menu at 1024 pixels and below, which the site's own script would have closed on load.
 
-**Editing.** One block at a time is `contenteditable`: `mousedown` (or keyboard focus) on an editable block finishes the previous one and starts this one; Enter, Shift+Enter, Escape, Tab or clicking elsewhere finishes it. `beforeinput` lets through only typing, composition, spelling replacement, deletions and undo/redo; formatting, line breaks, lists, links and drops are cancelled. A paste is cancelled at the `paste` event and its plain text inserted with `execCommand("insertText")` (newlines become spaces), which keeps native undo; `insertFromPaste` is handled the same way as a fallback. Every click inside the frame is cancelled (with the `<base>`, a link would otherwise navigate to the live site) and reported as a selection: a link or image opens in the panel, a locked part shows its reason.
+**Editing.** One block at a time is `contenteditable`: `mousedown` (or keyboard focus) on an editable block finishes the previous one and starts this one, and focuses it before the click places the caret (Firefox otherwise leaves focus on the frame's body when the click follows one on the editor's own buttons); Enter, Shift+Enter, Escape, Tab or clicking elsewhere finishes it. `beforeinput` lets through only typing, composition, spelling replacement, deletions and undo/redo; formatting, line breaks, lists, links and drops are cancelled. A paste is cancelled at the `paste` event and its plain text inserted with `execCommand("insertText")` (newlines become spaces), which keeps native undo; `insertFromPaste` is handled the same way as a fallback. Every click inside the frame is cancelled (with the `<base>`, a link would otherwise navigate to the live site) and reported as a selection: a link or image opens in the panel, a locked part shows its reason.
 
 **Committing a block** (`edits.commitTextEdit`). The block is read from the DOM as a snapshot (`dom-snapshot.js`); `snapshot.sanitise` maps non-breaking spaces to spaces, drops Chrome's `<br>` in an emptied block, unwraps elements the browser created that carry only a `style` attribute, and merges adjacent text. Nothing visible changed → no-op. The same element skeleton (by key) → each text slot (the text between two tags) is merged with `text-merge.mergeText`: both texts are split into words, a Myers diff (`sequence-diff.js`) finds what changed, unchanged words are re-emitted exactly as written with the whitespace before them (so `&amp;`, curly quotes and line wraps stay byte-identical), inserted words are escaped (`&`, `<`, `>` only) and joined with single spaces, and around a changed run the separator carrying a line break is kept, so a one-word edit changes one line. Whitespace just inside the block's own tags is formatting and kept; whitespace next to an inline element (a link, `<strong>`, a draft span) is visible and follows what was typed. No line ends in spaces afterwards (html-validate's `no-trailing-whitespace`). A changed skeleton (a deletion took a link or a `<strong>` with it) → the block's inner HTML is re-serialised, reusing each surviving element's original start and end tags verbatim, and the frame re-renders. Every commit re-parses the result and checks the block's tag, start tag, structure and text against what the browser showed, the bytes before and after the block, and the element count; any difference refuses the edit (the block resets and the typed text is offered for copying).
 
@@ -70,6 +71,52 @@ The Worker answers `GET /` with `site-editor-auth is running. Client secret: set
 **Unsaved work** is mirrored to sessionStorage per file (`working-store.js`) with the blob SHA it started from, so a reload or a sign-in round trip keeps it. The block being typed is mirrored too, 800 milliseconds after the last keystroke, without finishing it. If the file (a page or a Markdown file) changed on GitHub meanwhile, the old edits are not applied: they are kept aside, across reloads, and the panel shows them as a diff for copying until they are discarded. New typing, a Save and further changes on GitHub all leave them there (a second set joins the first).
 
 **Markdown tabs** (`markdown-files.js`). The Record (`docs/record.md`) and each blog source (`docs/blog-sources/*.md`, not the README) open in a plain textarea and save in the same commit as pages, with LF endings and one final newline (an emptied file is refused at Save). **New post source** creates `docs/blog-sources/<slug>.md` from the README's conventions: the eyebrow line (month, year and age, computed from the birth date in the record), the title, a lede, a `##` section and a Related list.
+
+## Drafts
+
+A draft is saved to the site but left out of thomaswhite.me until it is published. The rule is the site's (its `AGENTS.md`, "Drafts", and `scripts/drafts.mjs`): an element marked `data-draft` is a draft. The workflow that builds thomaswhite.me ("Publish the live site", the site's `.github/workflows/pages.yml`) leaves drafts out, except that a `remove` draft only loses its marker. The preview site, `new.thomaswhite.me`, is GitHub's automatic build and shows drafts as written, styled by the site's stylesheet. `drafting.js` writes three kinds:
+
+- `new`: content that isn't live. It was added as a draft, is a phrase kept off the site, or is live content taken off until it is published again.
+- `replace`: a new version of the live element straight before it. The live one stays until the draft is published.
+- `remove`: live content that goes when the draft is published.
+
+Placeholders (`draft-note`, `draft-inline`) and `data-draft="check"` come from the content-strategy work and are still finished with Done and Approve.
+
+**Draft mode.** The **Drafts** toggle in the top bar, remembered for the tab, keeps every change to live content as a draft:
+
+- **Typing, a link's address or tab, alt text, a caption or the Now month** (`asDraft`): the smallest whole element around the change stays as it is. The changed version goes in a copy straight after it, marked `replace`. That element is a link, paragraph, list item, heading, quote, figure, picture, list, table, details, section or article.
+  - The copy's ids become `data-draft-id`, so no id is on the preview twice; publishing names them back.
+  - The copy goes on lines of its own when the live element has its lines to itself, as the site's build cuts drafts. Otherwise it hugs the live element, so leaving it out or publishing it adds no whitespace.
+  - When that element holds something the site pins (the h1, Analisa's words, a proof label), only the changed block is copied. The home page's portrait note shares its section with the h1, for example. If neither can be copied, the change is refused and what was typed is shown for copying.
+  - Until the new version is published or discarded, the live element stays as it is, drafts on or off. A block is locked, with its reason in the panel, and dimmed in the preview. A link or image says why in its panel instead of offering changes. Any other change that would touch it is refused (`refuseWaitingChange`): published, the new version would undo the change, and as a draft it would make a second version. When the Now section has a new version waiting, the Now helper sets that version.
+- **+** adds the paragraph or item as a `new` draft, unless it lands inside a draft already. After an element that is itself a draft it lands outside it, so it gets its own marker.
+- **×** marks the block `remove`, without asking, since nothing leaves the live site until the removal is published.
+- **A change inside a draft** edits that draft, except in content marked to remove: that is still live, so with Drafts on a change to it is refused until **Keep it**.
+
+**The panel's Drafts part**, with the toggle on or off:
+
+- **Make this a draft** marks the smallest whole element around the block `new`, which takes it off the live site. **Make the section a draft** does the same to the whole section.
+- With words selected in the block being typed in, **Keep them off the live site** wraps them in `<span data-draft="new">`. **Remove them when published** wraps them in `<span data-draft="remove">`.
+  - The words must be in one run of text, not across a link or other formatting.
+  - Left out (a `new` phrase on the live site, or a removal published), a phrase takes the spacing with it: the space before it when punctuation or the end of a line follows, so the live page never reads "a bit .".
+  - Selecting the block's whole text marks the block itself.
+  - The preview remembers the last selection (`selectionchange`), because clicking a panel button moves focus out of the frame.
+- The page's h1 and anything holding Analisa's words can't be made drafts or marked to remove: the live page needs them. Nor can anything that holds a draft already: publishing the outer draft would leave the inner one behind.
+
+**Publishing and discarding** are in the panel and, for the draft a block is in, the toolbar:
+
+| Kind | Publish | Discard |
+| --- | --- | --- |
+| `new` | **Publish draft**: the marker goes (a phrase's span is unwrapped) | **Discard draft**: deleted, after asking |
+| `replace` | **Publish new version**: the live element before it is cut, then the marker goes and ids are named back | **Discard new version**: the copy is deleted, after asking |
+| `remove` | **Remove now**: deleted | **Keep it**: the marker goes |
+
+Publishing a new version refuses if the element before it is no longer a live one with the same tag.
+
+**What thomaswhite.me will show.** `liveSource()` leaves drafts out exactly as the site's `scripts/drafts.mjs` does, spacing included. A check of both over thousands of drafted variants of the fixture pages found them byte for byte the same. A unit test covers every block of six fixture pages: drafting a change leaves the live page unchanged, publishing the draft gives the direct edit, and discarding it gives the original.
+
+- **Descriptions:** `describe.js` compares the live views for **Changes**, what thomaswhite.me will show once published. A draft that went was published, or discarded, by what the live views show. A new version's live element leaves when it is published, and new content arrives. Whole elements are compared, attributes deep inside included, so a draft that changed only a link's address or a caption is told apart correctly. The drafts are listed apart, under **Drafts (saved, left out of thomaswhite.me)**: new versions, new content, removals, drafts edited or discarded, and content taken off the live site. A draft commit's subject says so, for example `Home: draft add “Really.”`.
+- **Checks:** the check for locked parts ignores draft copies and live elements waiting on a new version. A paragraph or list item whose words are all `new` drafts is blocked, because the live page would keep an empty element: one draft or several between them, even inside an `<em>`. The fix is to make the whole element a draft. The site's CI checks the same rules.
 
 ## Checks before Save
 
@@ -85,7 +132,7 @@ Blocking, mirroring the site's CI (`tests/static/*.test.mjs` in the site reposit
 - A local reference (a root path in `href`, `src`, `poster`, `data-full-src` or any `srcset` candidate; other URLs aren't checked) that is neither a page nor a file in the repository.
 - A `data-record` value that is not a `### slug` heading in the record (this is how a renamed heading in the Record tab is caught).
 
-Blocking, the editor's own: a link on a changed line to a missing `#anchor`; a relative link (the site writes every link from the root, and the local-reference check reads them that way; fix: the root form, resolved against the page's address); an emptied heading; an emptied Markdown file; any byte changed outside `main` or inside a locked block (the Now helper's line excepted).
+Blocking, the editor's own: a link on a changed line to a missing `#anchor`; a relative link (the site writes every link from the root, and the local-reference check reads them that way; fix: the root form, resolved against the page's address); an emptied heading; an emptied Markdown file; any byte changed outside `main` or inside a locked block (the Now helper's line, draft copies and live elements waiting on a new version excepted); a paragraph or list item whose words are all `new` drafts (see "Drafts").
 
 Warnings (Save still allowed): more than one exclamation mark on a page; straight quotes typed (fix: curl them); a Now line changed without its month; the call to action shared by Home, Programming, Volunteering and Contact; an emptied paragraph; a school-year mention edited (check its `data-review`); a gallery `data-caption` that no longer matches its figcaption (fix: copy it).
 
@@ -102,7 +149,7 @@ The Save dialog then shows, per file, the changed blocks as word runs and the ra
 1. If a page captured by a visual baseline changed (`index.html`, `programming.html`, `gallery.html`) and the head is not already the bot's commit, it dispatches **Update visual baselines** on `edits` and polls its run (every 15 seconds, 30 minutes at most), then links the regenerated PNGs. The dispatch doesn't name its run and GitHub lists it a few seconds later, so the run followed is the first one not listed before the dispatch, never an earlier run on the branch.
 2. It opens the pull request from `edits` with the title and description in the Publish dialog (which starts CI by itself), or refreshes an open one's. A commit pushed by the baseline workflow's `GITHUB_TOKEN` starts no workflow, so for an already-open pull request moved by the bot it dispatches **Test suite** (`ci.yml`). Never both.
 3. It polls the pull request and the latest run of each required check ("Static contracts and lint", "Browser and visual tests", "Lighthouse budgets") every 30 seconds while the tab is visible, or at once with **Refresh**. `mergeable: null` is retried. Publishable = every required check passed and `mergeable` is true. A failed check shows its link; a failed browser job on a captured page offers **Refresh screenshots** (baselines, then CI). A conflict with `main` asks for a Claude session. **Update from main** appears when `edits` is behind; it needs everything saved, asks GitHub to merge `main` in (`update-branch`, which answers before merging), waits for `edits` to move, and reloads the files from it, so nothing is checked or saved against the old ones. **Start checks** appears when no check has started on the head (for example if `update-branch` does not trigger the workflow). A pull request merged or closed on GitHub itself is followed, on the next poll, on returning to the tab, or at start-up: merged → the published state and a reload from `main`; closed → back to ready, with the saves still on `edits` for the next Publish.
-4. **Merge** passes the head SHA whose checks passed (GitHub refuses with 409 if it moved; the flow re-checks), merges with a merge commit, deletes `edits` unless another tab or device has saved on top of the merged head meanwhile (then it is kept, with those saves, for the next Publish), follows the `pages-build-deployment` run and reloads from `main`.
+4. **Merge** passes the head SHA whose checks passed (GitHub refuses with 409 if it moved; the flow re-checks), merges with a merge commit, deletes `edits` unless another tab or device has saved on top of the merged head meanwhile (then it is kept, with those saves, for the next Publish), follows the deployment run and reloads from `main`. The deployment run is GitHub's `pages-build-deployment` for the preview site. For thomaswhite.me, once its Pages source is GitHub Actions, it is the site's **Publish the live site** workflow, which leaves drafts out.
 
 Actions cost per publish in the site repository: about 19 Windows-weighted minutes for the pull request's CI, about 19 more for the push-to-main CI after the merge (the site's existing policy), about 3 for Pages, plus about 4 when baselines are refreshed. Saving costs nothing until a pull request is open.
 
@@ -114,7 +161,8 @@ Actions cost per publish in the site repository: about 19 Windows-weighted minut
 - paragraphs, list items and headings added or removed;
 - drafts finished or approved (fewer of a kind, not counting drafts whose block was removed);
 - link addresses and tabs, alt text, gallery captions;
-- the Now month.
+- the Now month;
+- the editor's drafts, apart from the live changes (see "Drafts"): pages are compared as thomaswhite.me will serve them, so a draft never reads as a live change.
 
 Markdown gets changed lines, paired the same way; a change to blank lines alone is reported as a spacing change.
 
@@ -127,7 +175,7 @@ Markdown gets changed lines, paired the same way; a change to blank lines alone 
 - **The Publish dialog** describes the whole branch as the pull request shows it, from the merge base with `main` to `edits`, and lists files in the editor's order. It prefills **Pull request title** and leaves **Description** for an optional note.
 - **The pull request's description** has three parts:
   - your note;
-  - the list of changes (and any regenerated screenshots) between `<!-- editor:changes -->` markers;
+  - the list of changes (and any regenerated screenshots) between `<!-- editor:changes -->` markers, under **Changes** and **Drafts (saved, left out of thomaswhite.me)**, each shown only when it has something;
   - the Record reminder, and the generated title in an `<!-- editor:title … -->` comment.
 
   Page text in it is escaped, and an `@` gets a zero-width space so nothing mentions anyone.
@@ -173,12 +221,12 @@ The plan's day-1 checks, run as the Playwright suite in Chromium, Firefox and We
 - a click on a link never navigates; the form cannot submit;
 - a re-render restores focus (the "+" journey types straight into the new paragraph).
 
-Found and fixed while checking: WebKit ignores script-made data on a constructed `beforeinput`, so paste is handled at the `paste` event; listeners attached at `load` missed early clicks, so they are attached at `DOMContentLoaded`. Still to see on real devices: a paste on an iPhone, and Safari on macOS (the live checks in `setup.md`).
+Found and fixed while checking: WebKit ignores script-made data on a constructed `beforeinput`, so paste is handled at the `paste` event; listeners attached at `load` missed early clicks, so they are attached at `DOMContentLoaded`; Firefox left focus on the frame's body when a click into the page followed one on the editor's own buttons, so typing went nowhere, and a block is now focused at `mousedown`. Still to see on real devices: a paste on an iPhone, and Safari on macOS (the live checks in `setup.md`).
 
 ## Tests
 
-- `npm run test:unit` (Node's test runner, `tests/unit/`): the Worker (every route, exact exchange bodies, cookies, CORS, strangers, the exact Groq request and its failures), `auth.js` (expiry, the lock, rotation, the 401 retry), the client (headers, error codes, the commit sequence, `gitBlobSha`), the page model (pinned block, link, image and draft counts for each of the 18 fixture pages, locks, the render copy), text edits (one-line diffs, `&amp;`, hugging tags, NBSP, emptied blocks, the re-serialising fallback, UTF-16 offsets, refusals, and a property test over every editable block of every fixture), drafts and attributes, structure (+ then × restores the file byte for byte), Markdown, the checks (the unmodified fixtures raise nothing; every rule fires), the descriptions (each kind of change on the fixtures, subjects within 72 characters, the note and title rules, what the AI may see), the suggestion client, the publish flow against the fake GitHub, the vendored bundle (rebuilt and compared byte for byte) and the publish allowlist.
-- `npm run test:e2e` (Playwright): twenty journeys against the fake GitHub through `page.route`, signing in for real from a Worker-style fragment.
+- `npm run test:unit` (Node's test runner, `tests/unit/`): the Worker (every route, exact exchange bodies, cookies, CORS, strangers, the exact Groq request and its failures), `auth.js` (expiry, the lock, rotation, the 401 retry), the client (headers, error codes, the commit sequence, `gitBlobSha`), the page model (pinned block, link, image and draft counts for each of the 18 fixture pages, locks, the render copy), text edits (one-line diffs, `&amp;`, hugging tags, NBSP, emptied blocks, the re-serialising fallback, UTF-16 offsets, refusals, and a property test over every editable block of every fixture), drafts and attributes, the editor's drafts (a property test over every block of six fixture pages: the live page unchanged, publishing is the direct edit, discarding restores the file; copies, locks, marks and phrases), structure (+ then × restores the file byte for byte), Markdown, the checks (the unmodified fixtures raise nothing; every rule fires), the descriptions (each kind of change on the fixtures, subjects within 72 characters, the note and title rules, what the AI may see), the suggestion client, the publish flow against the fake GitHub, the vendored bundle (rebuilt and compared byte for byte) and the publish allowlist.
+- `npm run test:e2e` (Playwright): twenty-two journeys against the fake GitHub through `page.route`, signing in for real from a Worker-style fragment.
 - Fixtures: `tests/fixtures/site/` holds verbatim LF copies of the site's pages and Markdown at the commit named in `SOURCE.md`, and `FILES.txt` lists that commit's files.
 - `dev/fake-github.js` is an in-memory GitHub (git objects, fast-forward-only refs, three-dot compare, pull requests, check runs, workflow runs, the baseline bot) used by the unit tests, the Playwright suite and `?mock=1`.
 
@@ -186,7 +234,7 @@ Found and fixed while checking: WebKit ignores script-made data on a constructed
 
 Before the content-strategy merge into `ThomasWCode/ThomasWCode.github.io` (the site repository's `docs/implementation-notes.md` §6, step 2), publish or discard everything pending in the editor: anything left on the preview repository's `edits` would miss the merge. After the merge:
 
-1. On GitHub: Settings → Applications → Installed GitHub Apps → Homepage Site Editor → Configure → add `ThomasWCode.github.io` (keep or remove the preview repository).
+1. On GitHub: Settings → Applications → Installed GitHub Apps → Homepage Site Editor → Configure → add `ThomasWCode.github.io` (keep or remove the preview repository). Its Settings → Pages → Source must already be **GitHub Actions** (set just before the merge, the site's §6 step 4), or thomaswhite.me would show drafts; the site's production test fails if it does.
 2. In `src/config.js`, change `active` from `"preview"` to `"main"`. The CSP already allows both site origins; nothing else names a repository.
 3. Refresh the fixtures from the main repository if its markup has moved on (see `tests/fixtures/site/SOURCE.md`), run `npm test`, and publish through the usual pull request.
 4. Publish a one-word test edit through the editor and check thomaswhite.me.
@@ -197,5 +245,6 @@ Before the content-strategy merge into `ThomasWCode/ThomasWCode.github.io` (the 
 - Text merge never re-wraps lines; a long insertion lengthens one line (no CI rule limits line length).
 - A word written with `&nbsp;` would be saved with a plain space if that word is edited (the site has none).
 - Headings cannot be added; images cannot be added or replaced; the header, footer and `<head>` are never editable. Those stay Claude-session work.
+- A draft phrase stays within one run of text (not across a link or `<strong>`), and a draft can't be made around another: publish or discard the inner one first.
 - GitHub has no conditional branch delete: `edits` is checked just before it is deleted (after a merge, or when a load finds it merged), but a save from another device landing between the check and the delete, a second at most, would be lost with it.
 - Whether revoking one token also invalidates its refresh token is still to be seen live; if it does not, Sign out should default to "everywhere" (`setup.md`, live checks).

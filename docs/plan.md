@@ -26,6 +26,11 @@ Approved on 25 September 2026 after five clarifying questions. This copy is the 
   - the Worker's `/describe` calls Groq behind the sign-in allowlist, and private files are sent only as counts.
 
   This is new scope beyond the plan: `how-it-works.md`, "Commit messages and pull requests" and "AI suggestions". The prompts were checked against Groq's live API before the tests were written. Locally: 147 unit tests, and 20 journeys in all three engines.
+- 26 September 2026, night: #2 merged and deployed. Tom then asked for drafts: text and sections saved but left out of thomaswhite.me until published, behaving as now on new.thomaswhite.me. He chose to leave drafts out of the live pages at build time, and for everything the editor can change to be draftable: paragraphs and list items, sections, new versions of live text, and phrases. Built in both repositories:
+  - the site: `scripts/drafts.mjs` and a "Publish the live site" workflow that builds thomaswhite.me without drafts (its Pages source becomes GitHub Actions at the merge). Its tests now check pages as thomaswhite.me will serve them;
+  - the editor: `drafting.js`, a Drafts toggle, draft actions in the panel and toolbar, and descriptions that list drafts apart from live changes (`how-it-works.md`, "Drafts"). The editor's tab also has the site's favicon now.
+
+  Found alongside: in Firefox, typing after a click on one of the editor's own buttons went nowhere; fixed. Tom's unpublished edits on the preview's `edits` branch were left alone. Locally: 154 unit tests, and 22 journeys in all three engines.
 
 ### Where the build differs from this plan
 

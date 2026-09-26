@@ -9,6 +9,9 @@
 // a fast-forward-only update of the branch.
 
 const API = "https://api.github.com";
+// The runs that publish a site: GitHub Pages' automatic build, and the live
+// site's own workflow, which leaves drafts out.
+export const DEPLOY_RUN_NAMES = new Set(["pages-build-deployment", "Publish the live site"]);
 
 export class GitHubError extends Error {
   constructor({ status, code, message, retryAfter = null, details = null }) {
@@ -203,11 +206,13 @@ export function createGitHubClient({ target, fetch, getAccessToken, now = () => 
       return result.workflow_runs;
     },
 
-    // GitHub Pages' own deployment runs on the base branch, newest first.
+    // The deployment runs on the base branch, newest first: GitHub Pages' own
+    // automatic build, or the workflow that builds thomaswhite.me leaving
+    // drafts out ("Publish the live site", the site's .github/workflows/pages.yml).
     async deployRuns() {
       const query = new URLSearchParams({ branch: target.base, per_page: "10" });
       const result = await json("GET", `${repo}/actions/runs?${query}`);
-      return result.workflow_runs.filter((run) => run.name === "pages-build-deployment");
+      return result.workflow_runs.filter((run) => DEPLOY_RUN_NAMES.has(run.name));
     },
 
     // Merge commit, and only if the PR head is still `headSha` (409 otherwise).
