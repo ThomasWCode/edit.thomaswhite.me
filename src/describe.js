@@ -4,8 +4,9 @@
 // lines, with the private files (docs/) reduced to line counts (forAi).
 
 import { lineHunks, trimEqualRuns, wordDiff } from "./diff-view.js";
+import { liveSource } from "./drafting.js";
 import { updatedLabel } from "./edits.js";
-import { attribute, blockText, buildPageModel, collapse, pageTitle, textOf } from "./page-model.js";
+import { attribute, blockText, buildPageModel, collapse, EDITOR_DRAFT_KINDS, pageTitle, previousElementSibling, textOf } from "./page-model.js";
 import { diffSequences } from "./sequence-diff.js";
 import { fallbackLabel, labelFromTitle } from "./site-files.js";
 
@@ -66,11 +67,70 @@ export function describeFile({ path, before, after, label = null, beforeModel = 
   const a = beforeModel || safeModel(before, path);
   const b = afterModel || safeModel(after, path);
   if (!a || !b) return { path, label: label || fileLabel(path, b || a), page, items: lineItems(before, after) };
-  const blocks = blockItems(a, b);
-  const items = [...blocks.items, ...draftItems(a, b, blocks.gone), ...linkItems(a, b), ...imageItems(a, b), ...nowItems(a, b)];
+  // What changes on thomaswhite.me: the two versions as it serves them, drafts
+  // left out (drafting.js). Then the drafts themselves: placeholders finished,
+  // and the editor's drafts saved, edited or discarded.
+  const liveA = safeModel(liveSource(a), path) || a;
+  const liveB = safeModel(liveSource(b), path) || b;
+  const live = [...blockItems(liveA, liveB).items, ...linkItems(liveA, liveB), ...imageItems(liveA, liveB), ...nowItems(liveA, liveB)];
+  const finished = draftItems(a, b, blockItems(a, b).gone);
+  // A draft finished (a placeholder written, a checked article approved) shows
+  // up live as new text: say it once, as the draft finished.
+  const plain = (text) => collapse((text || "").replace(/ — /g, " "));
+  const done = finished.map((item) => plain(item.text)).filter(Boolean);
+  const partOfDone = (item) => item.kind === "added" && done.some((text) => text.includes(plain(item.text)));
+  let items = [...live.filter((item) => !partOfDone(item)), ...finished, ...editorDraftItems(a, b, liveB)];
+  // Live content made a draft: gone from the live page, kept as a new draft.
+  for (const saved of items.filter((item) => item.kind === "draft-added" && item.draft === "new")) {
+    const gone = items.find((item) => item.kind === "removed" && plain(item.text) === plain(saved.text));
+    if (gone) items = items.filter((item) => item !== gone && item !== saved).concat({ kind: "unpublished", tag: saved.tag, text: saved.text });
+  }
   if (!items.length && before !== after) items.push({ kind: "markup" });
   return { path, label: label || fileLabel(path, b), page, items };
 }
+
+// The editor's drafts ("new", "replace", "remove"), outermost only, in page
+// order: { kind, tag, text, live } where live is the text a new version replaces.
+function editorDrafts(model) {
+  const inDraft = (node) => {
+    for (let item = node; item && item.attrs; item = item.parentNode) if (EDITOR_DRAFT_KINDS.has(attribute(item, "data-draft"))) return true;
+    return false;
+  };
+  return model.drafts
+    .filter((draft) => EDITOR_DRAFT_KINDS.has(draft.kind) && !inDraft(draft.node.parentNode))
+    .map((draft) => ({
+      kind: draft.kind,
+      tag: draft.node.tagName,
+      text: collapse(textOf(draft.node)),
+      live: draft.kind === "replace" ? collapse(textOf(previousElementSibling(draft.node) || draft.node)) : null,
+    }));
+}
+
+// Drafts saved, edited or discarded. A draft that went (and whose content is
+// now live, or gone for a removal) was published: the live changes say so.
+function editorDraftItems(a, b, liveB) {
+  const items = [];
+  const liveText = collapse(textOf(liveB.main || liveB.document));
+  for (const kind of EDITOR_DRAFT_KINDS) {
+    const run = pairRun(
+      editorDrafts(a).filter((draft) => draft.kind === kind),
+      editorDrafts(b).filter((draft) => draft.kind === kind),
+    );
+    for (const [from, to] of run.pairs) {
+      if (from.text !== to.text) items.push({ kind: "draft-edited", draft: kind, tag: to.tag, before: from.text, after: to.text });
+    }
+    for (const to of run.added) items.push({ kind: "draft-added", draft: kind, tag: to.tag, text: to.text, live: to.live });
+    for (const from of run.removed) {
+      const published = kind === "remove" ? !liveText.includes(from.text) : liveText.includes(from.text);
+      if (!published) items.push({ kind: "draft-discarded", draft: kind, tag: from.tag, text: from.text });
+    }
+  }
+  return items;
+}
+
+// Drafts saved, edited or discarded change nothing live. (Taking content off
+// the live site does, so it is listed with the live changes.)
+const isDraftItem = (item) => ["draft-added", "draft-edited", "draft-discarded"].includes(item.kind);
 
 // A file that isn't text the editor reads (a script, a stylesheet).
 export function otherFile(path, status) {
@@ -256,7 +316,20 @@ function pairRun(deleted, inserted) {
   };
 }
 
-const NOUNS = { p: ["paragraph"], li: ["list item"], line: ["line"], h2: ["heading"], h3: ["heading"], h4: ["heading"] };
+const NOUNS = {
+  p: ["paragraph"],
+  li: ["list item"],
+  line: ["line"],
+  h2: ["heading"],
+  h3: ["heading"],
+  h4: ["heading"],
+  span: ["phrase"],
+  a: ["link"],
+  section: ["section"],
+  article: ["article"],
+  figure: ["figure"],
+  picture: ["picture"],
+};
 const noun = (tag) => (NOUNS[tag] || ["block"])[0];
 const month = (value) => {
   try {
@@ -314,6 +387,16 @@ export function itemLine(item) {
       return "Changed";
     case "spacing":
       return "Changed only blank lines or spacing";
+    case "draft-added":
+      if (item.draft === "replace") return `Draft of a new version (not live): ${itemLine({ kind: "text", before: item.live, after: item.text })}`;
+      if (item.draft === "remove") return `Draft to remove when published (still live): ${quote(clip(item.text))}`;
+      return `Draft of a new ${noun(item.tag)} (not live): ${quote(clip(item.text))}`;
+    case "draft-edited":
+      return `Edited a draft: ${itemLine({ kind: "text", before: item.before, after: item.after })}`;
+    case "draft-discarded":
+      return `Discarded a draft: ${quote(clip(item.text))}`;
+    case "unpublished":
+      return `Took a ${noun(item.tag)} off the live site, kept as a draft: ${quote(clip(item.text))}`;
     default:
       return "Changed the page's markup (no text changed)";
   }
@@ -341,6 +424,16 @@ function shortLine(item) {
       return `alt text ${short(item.after)}`;
     case "caption":
       return `gallery caption ${short(item.after)}`;
+    case "draft-added":
+      if (item.draft === "replace") return `draft ${wordChange({ kind: "text", before: item.live, after: item.text }) || `a new version of ${short(item.live)}`}`;
+      if (item.draft === "remove") return `draft removing ${short(item.text)}`;
+      return `draft a new ${noun(item.tag)} ${short(item.text)}`;
+    case "draft-edited":
+      return `edit the draft ${short(item.after)}`;
+    case "draft-discarded":
+      return `discard the draft ${short(item.text)}`;
+    case "unpublished":
+      return `take ${short(item.text)} off the live site`;
     case "updated":
       return `Now section updated for ${month(item.after)}`;
     default:
@@ -376,6 +469,10 @@ function counts(items) {
         "deleted-file": `${plural(count, "file")} deleted`,
         "changed-file": `${plural(count, "file")} changed`,
         spacing: plural(count, "spacing change"),
+        "draft-added": `${plural(count, "draft")} saved`,
+        "draft-edited": `${plural(count, "draft")} edited`,
+        "draft-discarded": `${plural(count, "draft")} discarded`,
+        unpublished: `${plural(count, "part")} taken off the live site`,
       };
       return words[kind] || plural(count, "markup change");
     })
@@ -440,12 +537,19 @@ export function commitMessageFor(files) {
 const markdown = (text) => text.replace(/[\\`*_<>[\]]/g, "\\$&").replace(/@/g, "@\u200b");
 
 function changesSection(files, screenshots) {
-  const lines = [CHANGES_START, "### Changes", ""];
-  for (const file of files.filter((item) => item.items.length)) {
-    lines.push(`**${markdown(file.label)}** (\`${file.path}\`)`, "");
-    for (const item of file.items) lines.push(`- ${markdown(itemLine(item))}`);
-    lines.push("");
-  }
+  const lines = [CHANGES_START];
+  const part = (heading, keep) => {
+    const shown = files.map((file) => ({ ...file, items: file.items.filter(keep) })).filter((file) => file.items.length);
+    if (!shown.length) return;
+    lines.push(heading, "");
+    for (const file of shown) {
+      lines.push(`**${markdown(file.label)}** (\`${file.path}\`)`, "");
+      for (const item of file.items) lines.push(`- ${markdown(itemLine(item))}`);
+      lines.push("");
+    }
+  };
+  part("### Changes", (item) => !isDraftItem(item));
+  part("### Drafts (saved, left out of thomaswhite.me)", isDraftItem);
   if (screenshots.length) {
     lines.push("Screenshot baselines regenerated for the changed pages:", "");
     for (const path of screenshots) lines.push(`- \`${path.split("/").pop()}\``);

@@ -16,6 +16,7 @@ import {
   summarise,
   wordChange,
 } from "../../src/describe.js";
+import { asDraft, discardDraft, makeDraft, publishDraft } from "../../src/drafting.js";
 import { completeDraft, setAttribute, setNowUpdated } from "../../src/edits.js";
 import { collapse, textOf } from "../../src/page-model.js";
 import { addAfter, removeBlock } from "../../src/structure.js";
@@ -161,6 +162,27 @@ test("the pull request description: note, refreshed changes, footer, and the gen
   const escaped = prDescription({ files: [risky], autoTitle: "x" });
   assert.match(escaped, /@​codex \\<script\\>/);
   assert.ok(!escaped.includes("@codex"), "no mention reaches GitHub");
+});
+
+test("drafts: saved, published, discarded and taken off the live site are told apart", () => {
+  const drafted = asDraft(home, editBlock(home, "Pick whatever", "interesting", "fascinating"));
+  const saved = described(home, drafted);
+  assert.deepEqual(saved.items.map((item) => item.kind), ["draft-added"], "nothing live changed");
+  assert.equal(summarise([saved]), "Home: draft “interesting.” → “fascinating.”");
+  assert.match(itemLine(saved.items[0]), /^Draft of a new version \(not live\): “Pick whatever/);
+
+  const copy = drafted.drafts.find((draft) => draft.kind === "replace").key;
+  const published = described(drafted, publishDraft(drafted, copy));
+  assert.equal(summarise([published]), "Home: “interesting.” → “fascinating.”", "publishing is the live change itself");
+  assert.deepEqual(described(drafted, discardDraft(drafted, copy)).items.map((item) => item.kind), ["draft-discarded"]);
+
+  const off = described(home, makeDraft(home, blockKeyStarting(home, "Pick whatever")));
+  assert.deepEqual(off.items.map((item) => item.kind), ["unpublished"]);
+  assert.equal(summarise([off]), "Home: take “Pick whatever sounds a bit…” off the live site");
+
+  const body = prDescription({ files: [saved, off], autoTitle: "x" });
+  assert.ok(body.indexOf("### Changes") < body.indexOf("### Drafts (saved, left out of thomaswhite.me)"), "live changes, then drafts");
+  assert.match(body, /### Drafts \(saved, left out of thomaswhite\.me\)\n\n\*\*Home\*\*/);
 });
 
 test("forAi: published changes as lines, private files as a count", () => {
