@@ -67,7 +67,7 @@ GitHub → Settings → Applications → Authorized GitHub Apps → Homepage Sit
 
 ### Switching to the main site
 
-After the content-strategy merge (the site repository's `docs/implementation-notes.md` §6): install the App on `ThomasWCode/ThomasWCode.github.io`, set `active` to `"main"` in `src/config.js`, publish that change through a pull request, then make a one-word test edit through the editor. Details in [`how-it-works.md`](how-it-works.md), "Switching targets".
+Before the content-strategy merge (the site repository's `docs/implementation-notes.md` §6), publish or discard everything pending in the editor, so nothing is left on the preview repository's `edits`. After it: install the App on `ThomasWCode/ThomasWCode.github.io`, set `active` to `"main"` in `src/config.js`, publish that change through a pull request, then make a one-word test edit through the editor. Details in [`how-it-works.md`](how-it-works.md), "Switching targets".
 
 ### If Pages stops publishing
 

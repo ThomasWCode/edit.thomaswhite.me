@@ -135,7 +135,7 @@ Found and fixed while checking: WebKit ignores script-made data on a constructed
 
 ## Switching targets
 
-After the content-strategy merge into `ThomasWCode/ThomasWCode.github.io` (the site repository's `docs/implementation-notes.md` §6):
+Before the content-strategy merge into `ThomasWCode/ThomasWCode.github.io` (the site repository's `docs/implementation-notes.md` §6, step 2), publish or discard everything pending in the editor: anything left on the preview repository's `edits` would miss the merge. After the merge:
 
 1. On GitHub: Settings → Applications → Installed GitHub Apps → Homepage Site Editor → Configure → add `ThomasWCode.github.io` (keep or remove the preview repository).
 2. In `src/config.js`, change `active` from `"preview"` to `"main"`. The CSP already allows both site origins; nothing else names a repository.
