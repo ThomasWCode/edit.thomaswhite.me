@@ -214,6 +214,11 @@ test("a baseline bot commit does not block a save; another device's edit to the 
   await conflict.getByRole("button", { name: "Reload those files" }).click();
   await expect(frame(page).locator("p", { hasText: "Pick whatever" })).toHaveText("Pick whatever sounds a bit interesting. One. Two.");
   expect(fake.fileAt("edits", "index.html")).toContain("<!-- elsewhere -->");
+  // The typing the reload replaced is kept aside to copy from.
+  const panel = page.locator("#panel");
+  await expect(panel).toContainText("changed on GitHub after your unsaved edits");
+  await panel.getByRole("button", { name: "Show them" }).click();
+  await expect(page.locator("#save-dialog")).toContainText("Three.");
 });
 
 test("locked parts refuse editing and say why", async ({ page }) => {
@@ -300,8 +305,24 @@ test("unsaved Record edits made to an older version are kept aside, not overwrit
   await page.reload();
   await page.locator("#record-list .file-link").click();
   await expect(panel).toContainText("changed on GitHub after your unsaved edits");
+
+  // A second change on GitHub sets the new typing aside too, next to the first;
+  // saving other work to the file keeps both.
+  await fake.commitAs("main", { "docs/record.md": `${fake.fileAt("main", "docs/record.md")}- Added again.\n` });
+  await page.reload();
+  await page.locator("#record-list .file-link").click();
+  await expect(editor).toHaveValue(/Added again/);
+  await editor.press("Control+End");
+  await editor.type("- Saved typing.\n");
+  await save(page);
+  expect(fake.fileAt("edits", "docs/record.md")).toContain("- Saved typing.\n");
+  await page.reload();
+  await page.locator("#record-list .file-link").click();
+  await expect(panel).toContainText("changed on GitHub after your unsaved edits");
   await panel.getByRole("button", { name: "Show them" }).click();
-  await expect(page.locator("#save-dialog")).toContainText("Typed before the file changed.");
+  const shown = page.locator("#save-dialog");
+  await expect(shown).toContainText("Typed before the file changed.");
+  await expect(shown).toContainText("New typing.");
 });
 
 test("Save waits until every page has loaded, so the site-wide checks see the whole site", async ({ page }) => {

@@ -205,15 +205,18 @@ export function createApp({ target, client, user, onSignedOut }) {
   }
 
   // Unsaved work from sessionStorage. Edits made to an older version of the
-  // file (it changed on GitHub since) are kept aside as `stale`, shown in the
-  // panel and stored until discarded, so new typing can never overwrite them.
+  // file (it changed on GitHub since) are kept aside in `stale`, a list of
+  // { original, working }, shown in the panel and stored until discarded: new
+  // typing, a Save, or the file changing again never overwrites them.
+  const staleSets = (value) => (Array.isArray(value) ? [...value] : value ? [value] : []);
   function restoreFromStore(entry) {
     const record = store.load(entry.path);
     if (!record) return;
+    const aside = staleSets(record.stale);
     if (entry.isNew || record.loadedSha === entry.loadedSha) {
       entry.working = record.working;
       entry.log = Array.isArray(record.log) ? record.log : [];
-      entry.stale = record.stale || null;
+      entry.stale = aside.length ? aside : null;
       if (record.isNew) entry.isNew = true;
       if (entry.kind === "page") {
         try {
@@ -225,7 +228,8 @@ export function createApp({ target, client, user, onSignedOut }) {
         }
       }
     } else {
-      entry.stale = { original: record.original, working: record.working };
+      if (record.working !== record.original) aside.push({ original: record.original, working: record.working });
+      entry.stale = aside.length ? aside : null;
     }
   }
 
@@ -822,8 +826,7 @@ export function createApp({ target, client, user, onSignedOut }) {
         if (entry.kind === "page") entry.originalModel = entry.model;
         entry.undo = [];
         entry.log = [];
-        entry.stale = null;
-        store.remove(entry.path);
+        persist(entry);
       }
       generation += 1;
       toast(flow.state.notice || "Saved.", "success");
@@ -847,16 +850,16 @@ export function createApp({ target, client, user, onSignedOut }) {
         "div",
         {},
         h("p", {}, `${error.conflicts.join(", ")} changed on GitHub since this tab loaded ${error.conflicts.length === 1 ? "it" : "them"} (another device, or a Claude session).`),
-        h("p", {}, "Reload drops your unsaved edits to those files and loads GitHub's version. Your other files keep their edits."),
+        h("p", {}, "Reload loads GitHub's version of those files and keeps your unsaved edits to them aside, to copy from. Your other files keep their edits."),
       ),
       actions: [
         { label: "Cancel", value: null },
         dirty.length > error.conflicts.length ? { label: "Save the other files", value: "others" } : null,
-        { label: "Reload those files", value: "reload", kind: "danger" },
+        { label: "Reload those files", value: "reload", kind: "primary" },
       ].filter(Boolean),
     });
     if (choice === "reload") {
-      for (const path of error.conflicts) store.remove(path);
+      // Their stored records name the old blob, so the reload sets them aside.
       await reload();
     } else if (choice === "others") {
       await doSave(dirty.filter((entry) => !error.conflicts.includes(entry.path)));
@@ -1195,7 +1198,12 @@ export function createApp({ target, client, user, onSignedOut }) {
     const view = () =>
       openDialog($("save-dialog"), {
         title: "Your earlier edits",
-        body: h("div", {}, h("p", {}, "These unsaved edits were made to an older version of this file. Copy what you need, then discard them."), hunksView(entry.stale.original || "", entry.stale.working)),
+        body: h(
+          "div",
+          {},
+          h("p", {}, `These unsaved edits were made to ${entry.stale.length === 1 ? "an older version" : "older versions"} of this file. Copy what you need, then discard them.`),
+          entry.stale.map((set) => hunksView(set.original || "", set.working)),
+        ),
         actions: [{ label: "Close", value: null }],
       });
     return h(
