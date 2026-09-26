@@ -1,0 +1,445 @@
+// Words for commits and pull requests: what changed in each file, read from
+// the file as it was and as it is. Pure (no DOM), so the Save dialog, the
+// publish flow and the tests share it. The AI suggestions start from the same
+// lines, with the private files (docs/) reduced to line counts (forAi).
+
+import { lineHunks, trimEqualRuns, wordDiff } from "./diff-view.js";
+import { updatedLabel } from "./edits.js";
+import { attribute, blockText, buildPageModel, collapse, pageTitle, textOf } from "./page-model.js";
+import { diffSequences } from "./sequence-diff.js";
+import { fallbackLabel, labelFromTitle } from "./site-files.js";
+
+export const SUBJECT_LIMIT = 72;
+export const CHANGES_START = "<!-- editor:changes -->";
+export const CHANGES_END = "<!-- /editor:changes -->";
+export const FOOTER =
+  "Edits made at https://edit.thomaswhite.me. If a fact changed, update `docs/record.md` (the editor's Record tab) in this pull request before merging.";
+const TITLE_MARK = /<!-- editor:title ([\s\S]*?) -->/;
+const OLD_BODY_START = "Edits made at https://edit.thomaswhite.me.";
+const EXCERPT_LIMIT = 90;
+const WORDS_LIMIT = 30;
+
+// The Record and the blog sources: never published, never sent to the AI.
+export const isPrivatePath = (path) => path.startsWith("docs/");
+
+const quote = (text) => `“${text}”`;
+const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+
+export function clip(text, limit = EXCERPT_LIMIT) {
+  const clean = collapse(text || "");
+  if (clean.length <= limit) return clean;
+  const cut = clean.slice(0, limit - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > limit / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+export function joinAnd(list) {
+  if (list.length <= 1) return list.join("");
+  return `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`;
+}
+
+export function fileLabel(path, model = null) {
+  if (path === "docs/record.md") return "Record";
+  const source = path.match(/^docs\/blog-sources\/(.+)\.md$/);
+  if (source) return `Blog source ${source[1]}`;
+  const title = model ? pageTitle(model) : "";
+  return title ? labelFromTitle(title) : path.endsWith(".html") ? fallbackLabel(path) : path;
+}
+
+function safeModel(source, path) {
+  try {
+    return buildPageModel(source, { path });
+  } catch {
+    return null;
+  }
+}
+
+// One file: { path, label, page, items }. `before` or `after` is null for a
+// file added or removed; the page models can be passed to save parsing again.
+export function describeFile({ path, before, after, label = null, beforeModel = null, afterModel = null }) {
+  const page = path.endsWith(".html");
+  if (before === null || after === null) {
+    const model = page && after !== null ? afterModel || safeModel(after, path) : null;
+    return { path, label: label || fileLabel(path, model), page, items: [{ kind: before === null ? "new-file" : "deleted-file" }] };
+  }
+  if (!page) return { path, label: label || fileLabel(path), page, items: lineItems(before, after) };
+  const a = beforeModel || safeModel(before, path);
+  const b = afterModel || safeModel(after, path);
+  if (!a || !b) return { path, label: label || fileLabel(path, b || a), page, items: lineItems(before, after) };
+  const blocks = blockItems(a, b);
+  const items = [...blocks.items, ...draftItems(a, b, blocks.gone), ...linkItems(a, b), ...imageItems(a, b), ...nowItems(a, b)];
+  if (!items.length && before !== after) items.push({ kind: "markup" });
+  return { path, label: label || fileLabel(path, b), page, items };
+}
+
+// A file that isn't text the editor reads (a script, a stylesheet).
+export function otherFile(path, status) {
+  const kind = status === "added" ? "new-file" : status === "removed" ? "deleted-file" : "changed-file";
+  return { path, label: path, page: false, items: [{ kind }] };
+}
+
+// Blocks, aligned by their text so an added or removed item doesn't make
+// every later block look changed. A deletion next to an insertion is a
+// rewording; the rest were added or removed. The Now section's Updated line
+// is left to nowItems. Returns { items, gone }: gone holds the keys of the
+// removed blocks, whose drafts went with them rather than being finished.
+function blockItems(a, b) {
+  const listOf = (model) =>
+    model.blocks.filter((block) => block.key !== model.now?.lineKey).map((block) => ({ block, text: blockText(model, block.key) }));
+  const listA = listOf(a);
+  const listB = listOf(b);
+  const items = [];
+  const gone = new Set();
+  let deleted = [];
+  let inserted = [];
+  const flush = () => {
+    const pairs = Math.min(deleted.length, inserted.length);
+    for (let index = 0; index < pairs; index += 1) items.push({ kind: "text", before: deleted[index].text, after: inserted[index].text });
+    for (const { block } of deleted.slice(pairs)) gone.add(block.key);
+    items.push(...units("removed", a, deleted.slice(pairs)), ...units("added", b, inserted.slice(pairs)));
+    deleted = [];
+    inserted = [];
+  };
+  for (const operation of diffSequences(listA, listB, (x, y) => x.text === y.text)) {
+    if (operation.type === "delete") deleted.push(listA[operation.oldIndex]);
+    else if (operation.type === "insert") inserted.push(listB[operation.newIndex]);
+    else flush();
+  }
+  flush();
+  return { items, gone };
+}
+
+// Added or removed blocks, one item per paragraph or list item (a dated list
+// item's label and text are two blocks).
+function units(kind, model, entries) {
+  const groups = new Map();
+  for (const { block, text } of entries) {
+    const key = block.structuralKey ?? block.key;
+    const group = groups.get(key) || { kind, tag: (model.nodeOf.get(key) || block.node).tagName, texts: [] };
+    if (text) group.texts.push(text);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map((group) => ({ kind: group.kind, tag: group.tag, text: group.texts.join(" — ") }));
+}
+
+// Drafts finished: fewer of a kind than before, not counting drafts whose
+// block was removed. Those whose text is still found among the remaining
+// drafts were not the ones finished.
+function draftItems(a, b, gone) {
+  const items = [];
+  for (const kind of ["note", "inline", "check"]) {
+    const before = a.drafts.filter((draft) => draft.kind === kind && !gone.has(draft.blockKey ?? draft.key));
+    const after = b.drafts.filter((draft) => draft.kind === kind);
+    let finished = before.length - after.length;
+    if (finished <= 0) continue;
+    const item = kind === "check" ? "approved" : "draft-done";
+    const left = after.map((draft) => collapse(textOf(draft.node)));
+    for (const draft of before) {
+      if (!finished) break;
+      const text = collapse(textOf(draft.node));
+      const index = left.indexOf(text);
+      if (index >= 0) {
+        left.splice(index, 1);
+        continue;
+      }
+      items.push({ kind: item, text });
+      finished -= 1;
+    }
+    for (; finished > 0; finished -= 1) items.push({ kind: item, text: "" });
+  }
+  return items;
+}
+
+// Link addresses and tabs, when the page has the same links as before.
+function linkItems(a, b) {
+  if (a.links.length !== b.links.length) return [];
+  const items = [];
+  a.links.forEach((link, index) => {
+    const other = b.links[index];
+    const text = clip(textOf(other.node), 40);
+    if ((link.href || "") !== (other.href || "")) items.push({ kind: "link", text, before: link.href || "", after: other.href || "" });
+    const newTab = attribute(other.node, "target") === "_blank";
+    if ((attribute(link.node, "target") === "_blank") !== newTab) items.push({ kind: "link-tab", text, newTab });
+  });
+  return items;
+}
+
+// Alt text and gallery captions, when the page has the same images as before.
+function imageItems(a, b) {
+  if (a.images.length !== b.images.length) return [];
+  const items = [];
+  const caption = (model, image) => (image.gallery ? attribute(model.nodeOf.get(image.gallery.buttonKey), "data-caption") ?? "" : "");
+  a.images.forEach((image, index) => {
+    const other = b.images[index];
+    const altBefore = attribute(image.node, "alt") ?? "";
+    const altAfter = attribute(other.node, "alt") ?? "";
+    if (altBefore !== altAfter) items.push({ kind: "alt", before: altBefore, after: altAfter });
+    const captionBefore = caption(a, image);
+    const captionAfter = caption(b, other);
+    if (captionBefore !== captionAfter) items.push({ kind: "caption", before: captionBefore, after: captionAfter });
+  });
+  return items;
+}
+
+function nowItems(a, b) {
+  const before = a.now ? a.now.updated : null;
+  const after = b.now ? b.now.updated : null;
+  return after && before !== after ? [{ kind: "updated", before, after }] : [];
+}
+
+// Markdown (or a page that can't be parsed): changed lines, paired within
+// each hunk as rewordings.
+function lineItems(before, after) {
+  const items = [];
+  for (const hunk of lineHunks(before, after, 0)) {
+    const removed = hunk.rows.filter((row) => row.type === "-" && row.text.trim()).map((row) => row.text);
+    const added = hunk.rows.filter((row) => row.type === "+" && row.text.trim()).map((row) => row.text);
+    const pairs = Math.min(removed.length, added.length);
+    for (let index = 0; index < pairs; index += 1) items.push({ kind: "text", before: removed[index], after: added[index] });
+    for (const text of removed.slice(pairs)) items.push({ kind: "removed", tag: "line", text });
+    for (const text of added.slice(pairs)) items.push({ kind: "added", tag: "line", text });
+  }
+  return items;
+}
+
+const NOUNS = { p: ["paragraph"], li: ["list item"], line: ["line"], h2: ["heading"], h3: ["heading"], h4: ["heading"] };
+const noun = (tag) => (NOUNS[tag] || ["block"])[0];
+const month = (value) => {
+  try {
+    return updatedLabel(value).replace(/^Updated /, "");
+  } catch {
+    return value;
+  }
+};
+
+// A text change that is one short run of words: "“see” → “watch”", "add
+// “very”", "remove “really”". Null for anything longer or scattered.
+export function wordChange(item) {
+  if (item.kind !== "text") return null;
+  const runs = wordDiff(item.before, item.after);
+  const changed = runs.map((run, index) => (run.type === "equal" ? -1 : index)).filter((index) => index >= 0);
+  if (!changed.length || changed[changed.length - 1] - changed[0] + 1 !== changed.length) return null;
+  const removed = runs.filter((run) => run.type === "delete").map((run) => run.text).join(" ");
+  const added = runs.filter((run) => run.type === "insert").map((run) => run.text).join(" ");
+  if (removed.length > WORDS_LIMIT || added.length > WORDS_LIMIT) return null;
+  if (removed && added) return `${quote(removed)} → ${quote(added)}`;
+  return added ? `add ${quote(added)}` : `remove ${quote(removed)}`;
+}
+
+// One line of a commit body or pull request description.
+export function itemLine(item) {
+  switch (item.kind) {
+    case "text": {
+      const runs = trimEqualRuns(wordDiff(item.before, item.after), 4);
+      const side = (type) => clip(runs.filter((run) => run.type === "equal" || run.type === type).map((run) => run.text).join(" "), 160);
+      return `${quote(side("delete"))} → ${quote(side("insert"))}`;
+    }
+    case "added":
+      return `Added a ${noun(item.tag)}: ${quote(clip(item.text))}`;
+    case "removed":
+      return `Removed a ${noun(item.tag)}: ${quote(clip(item.text))}`;
+    case "draft-done":
+      return item.text ? `Marked a draft done: ${quote(clip(item.text))}` : "Marked a draft done";
+    case "approved":
+      return item.text ? `Approved a checked draft: ${quote(clip(item.text))}` : "Approved a checked draft";
+    case "link":
+      return `Link ${quote(item.text)} now goes to ${item.after} (was ${item.before})`;
+    case "link-tab":
+      return `Link ${quote(item.text)} now opens in ${item.newTab ? "a new tab" : "the same tab"}`;
+    case "alt":
+      return `Alt text: ${quote(clip(item.before))} → ${quote(clip(item.after))}`;
+    case "caption":
+      return `Gallery caption: ${quote(clip(item.before))} → ${quote(clip(item.after))}`;
+    case "updated":
+      return `Now section updated: ${item.before ? `${month(item.before)} → ` : ""}${month(item.after)}`;
+    case "new-file":
+      return "New file";
+    case "deleted-file":
+      return "Deleted";
+    case "changed-file":
+      return "Changed";
+    default:
+      return "Changed the page's markup (no text changed)";
+  }
+}
+
+// A few words for a subject naming one change.
+function shortLine(item) {
+  const short = (text) => quote(clip(text, 36));
+  switch (item.kind) {
+    case "text":
+      return wordChange(item) || `reword ${short(item.after)}`;
+    case "added":
+      return `add a ${noun(item.tag)} ${short(item.text)}`;
+    case "removed":
+      return `remove a ${noun(item.tag)} ${short(item.text)}`;
+    case "draft-done":
+      return item.text ? `finish the draft ${short(item.text)}` : "finish a draft";
+    case "approved":
+      return item.text ? `approve ${short(item.text)}` : "approve a checked draft";
+    case "link":
+      return `point ${quote(item.text)} at ${item.after}`;
+    case "link-tab":
+      return `${quote(item.text)} opens in ${item.newTab ? "a new tab" : "the same tab"}`;
+    case "alt":
+      return `alt text ${short(item.after)}`;
+    case "caption":
+      return `gallery caption ${short(item.after)}`;
+    case "updated":
+      return `Now section updated for ${month(item.after)}`;
+    default:
+      return itemLine(item).toLowerCase();
+  }
+}
+
+// "2 wording changes, 1 draft done".
+function counts(items) {
+  const order = [];
+  const tally = new Map();
+  for (const item of items) {
+    const key = item.kind === "added" || item.kind === "removed" ? `${item.kind}:${noun(item.tag)}` : item.kind;
+    if (!tally.has(key)) order.push(key);
+    tally.set(key, (tally.get(key) || 0) + 1);
+  }
+  return order
+    .map((key) => {
+      const count = tally.get(key);
+      const [kind, what] = key.split(":");
+      if (kind === "added") return `${plural(count, what)} added`;
+      if (kind === "removed") return `${plural(count, what)} removed`;
+      const words = {
+        text: plural(count, "wording change"),
+        "draft-done": `${plural(count, "draft")} done`,
+        approved: `${plural(count, "draft")} approved`,
+        link: `${plural(count, "link")} changed`,
+        "link-tab": `${plural(count, "link target")} changed`,
+        alt: `${plural(count, "alt text")} changed`,
+        caption: `${plural(count, "caption")} changed`,
+        updated: "Now month updated",
+        "new-file": plural(count, "new file"),
+        "deleted-file": `${plural(count, "file")} deleted`,
+        "changed-file": `${plural(count, "file")} changed`,
+      };
+      return words[kind] || plural(count, "markup change");
+    })
+    .join(", ");
+}
+
+// "Edit 2 pages and the Record".
+function collective(files) {
+  const pages = files.filter((file) => file.page).length;
+  const record = files.some((file) => file.path === "docs/record.md");
+  const sources = files.filter((file) => file.path.startsWith("docs/blog-sources/")).length;
+  const other = files.length - pages - (record ? 1 : 0) - sources;
+  const parts = [];
+  if (pages) parts.push(plural(pages, "page"));
+  if (record) parts.push("the Record");
+  if (sources) parts.push(plural(sources, "blog source"));
+  if (other) parts.push(plural(other, "other file"));
+  return `Edit ${joinAnd(parts)}`;
+}
+
+function truncate(text, limit) {
+  if (text.length <= limit) return text;
+  const cut = text.slice(0, limit - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > limit / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+// The subject line (a commit's first line, a pull request's title): the most
+// specific candidate that fits in `limit` characters.
+export function summarise(files, limit = SUBJECT_LIMIT) {
+  const described = files.filter((file) => file.items.length);
+  if (!described.length) return "Edit the site";
+  const labels = [...new Set(described.map((file) => (file.path === "docs/record.md" && described.length > 1 ? "the Record" : file.label)))];
+  const items = described.flatMap((file) => file.items);
+  const candidates = [];
+  const changes = items.map(wordChange);
+  if (changes.every((change) => change && change === changes[0])) {
+    const change = changes[0];
+    candidates.push(labels.length === 1 ? `${labels[0]}: ${change}` : `${change.charAt(0).toUpperCase()}${change.slice(1)} on ${joinAnd(labels)}`);
+  }
+  if (items.length === 1) candidates.push(`${labels[0]}: ${shortLine(items[0])}`);
+  const tally = counts(items);
+  candidates.push(`${joinAnd(labels)}: ${tally}`, `${collective(described)}: ${tally}`, collective(described));
+  const fit = candidates.find((candidate) => candidate.length <= limit);
+  return fit || truncate(candidates[candidates.length - 1], limit);
+}
+
+// "Physics & Ideas (physics.html)" and a line per change, per file.
+export function bodyText(files) {
+  return files
+    .filter((file) => file.items.length)
+    .map((file) => [`${file.label} (${file.path})`, ...file.items.map((item) => `- ${itemLine(item)}`)].join("\n"))
+    .join("\n\n");
+}
+
+export function commitMessageFor(files) {
+  return `${summarise(files)}\n\n${bodyText(files)}\n`;
+}
+
+// Page text in a pull request: no raw HTML, no emphasis or links, and no
+// @mentions (a zero-width space after the @ keeps GitHub from notifying).
+const markdown = (text) => text.replace(/[\\`*_<>[\]]/g, "\\$&").replace(/@/g, "@\u200b");
+
+function changesSection(files, screenshots) {
+  const lines = [CHANGES_START, "### Changes", ""];
+  for (const file of files.filter((item) => item.items.length)) {
+    lines.push(`**${markdown(file.label)}** (\`${file.path}\`)`, "");
+    for (const item of file.items) lines.push(`- ${markdown(itemLine(item))}`);
+    lines.push("");
+  }
+  if (screenshots.length) {
+    lines.push("Screenshot baselines regenerated for the changed pages:", "");
+    for (const path of screenshots) lines.push(`- \`${path.split("/").pop()}\``);
+    lines.push("");
+  }
+  lines.push(CHANGES_END);
+  return lines.join("\n");
+}
+
+// A title inside an HTML comment can't hold "--".
+const markable = (title) => title.replace(/-{2,}/g, "–");
+
+// The pull request's description: your note, then the changes between markers
+// the editor refreshes on each save, then the footer and, in a comment, the
+// title the editor generated (so a title you changed is never replaced).
+export function prDescription({ note = "", files, screenshots = [], autoTitle }) {
+  const parts = [note.trim(), changesSection(files, screenshots), FOOTER, `<!-- editor:title ${markable(autoTitle)} -->`];
+  return `${parts.filter(Boolean).join("\n\n")}\n`;
+}
+
+// Your note in a description: the text before the changes. A description from
+// before the markers existed was all generated, so it has none.
+export function noteOf(body) {
+  if (!body) return "";
+  const start = body.indexOf(CHANGES_START);
+  if (start >= 0) return body.slice(0, start).trim();
+  if (body.startsWith(OLD_BODY_START)) return "";
+  return body.replace(TITLE_MARK, "").replace(FOOTER, "").trim();
+}
+
+export function autoTitleOf(body) {
+  const match = body ? body.match(TITLE_MARK) : null;
+  return match ? match[1] : null;
+}
+
+// Whether a pull request still has the title the editor gave it.
+export function hasAutoTitle(pr, legacyTitle) {
+  const marked = autoTitleOf(pr.body);
+  return pr.title === legacyTitle || (marked !== null && markable(pr.title) === marked);
+}
+
+// What an AI suggestion may see: the change lines of published files, and
+// for private files (the Record, blog sources) only how many lines changed.
+export function forAi(files, { lines = 20 } = {}) {
+  return files
+    .filter((file) => file.items.length)
+    .map((file) => ({
+      file: file.label,
+      path: file.path,
+      changes: isPrivatePath(file.path)
+        ? [`${plural(file.items.length, "change")} (private file: content not shared)`]
+        : file.items.slice(0, lines).map((item) => itemLine(item)),
+    }));
+}
