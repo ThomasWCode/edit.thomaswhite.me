@@ -79,6 +79,25 @@ test("a list item added or removed is one item, and the blocks after it are unch
   assert.match(itemLine(removal.items[0]), /^Removed a list item: “Dennis E\. Taylor — All of the Bobiverse books/);
 });
 
+test("a removal or an insertion next to a rewording is paired by shared words, not position", () => {
+  const lucky = programming.blockByKey.get(blockKeyStarting(programming, "I consider myself lucky")).structuralKey;
+  const removedThenReworded = editBlock(removeBlock(programming, lucky), "Since then I", "Since then I’ve made", "Since then I have made");
+  const first = described(programming, removedThenReworded);
+  assert.deepEqual(first.items.map((item) => item.kind), ["text", "removed"]);
+  assert.match(itemLine(first.items[0]), /^“Since then I’ve made .*” → “Since then I have made /);
+  assert.match(itemLine(first.items[1]), /^Removed a paragraph: “I consider myself lucky/);
+
+  const lua = programming.blockByKey.get(blockKeyStarting(programming, "My first language was Lua")).structuralKey;
+  const insertedThenReworded = editBlock(addAfter(programming, lua).model, "I consider myself lucky", "myself lucky", "myself fortunate");
+  const second = described(programming, insertedThenReworded);
+  assert.deepEqual(second.items.map((item) => item.kind), ["text", "added"]);
+  assert.match(itemLine(second.items[0]), /“I consider myself lucky .*” → “I consider myself fortunate/);
+  assert.equal(second.items[1].text, "New paragraph");
+
+  const rewritten = describeFile({ path: "x.md", before: "The first line.\n", after: "Something else entirely.\n" });
+  assert.deepEqual(rewritten.items.map((item) => item.kind), ["text"], "one line rewritten outright is still a rewording");
+});
+
 test("link addresses and tabs, alt text, and the Now month", () => {
   const reading = home.links.find((link) => link.href === "/physics/#reading");
   const moved = described(home, setAttribute(home, reading.key, "href", "/physics/#questions"));
@@ -103,6 +122,10 @@ test("Markdown: changed lines, and the Record's label", () => {
   const page = described(physics, editBlock(physics, "Game of Life", "then see which", "then watch which"));
   assert.equal(summarise([page, file]), "Physics & Ideas and the Record: 1 wording change, 1 line added");
   assert.equal(bodyText([file]), "Record (docs/record.md)\n- Added a line: “- A new fact.”");
+
+  const spacing = describeFile({ path: "docs/record.md", before: "a\n\nb\n", after: "a\n\n\nb\n" });
+  assert.deepEqual(spacing.items, [{ kind: "spacing" }], "blank lines alone are still a change");
+  assert.equal(summarise([spacing]), "Record: changed only blank lines or spacing");
 });
 
 test("subjects never pass 72 characters; many changes fall back to counts", () => {
@@ -144,10 +167,12 @@ test("forAi: published changes as lines, private files as a count", () => {
   const page = described(physics, editBlock(physics, "Game of Life", "then see which", "then watch which"));
   const record = readFixture("docs/record.md");
   const privateFile = describeFile({ path: "docs/record.md", before: record, after: `${record}- Secret.\n- Another.\n` });
-  const source = describeFile({ path: "docs/blog-sources/draft.md", before: "a\n", after: "b\n" });
+  const source = describeFile({ path: "docs/blog-sources/my-secret-post.md", before: "a\n", after: "b\n" });
+  assert.equal(source.label, "Blog source my-secret-post", "the editor itself may show the name");
   const sent = forAi([page, privateFile, source]);
   assert.deepEqual(sent[0], { file: "Physics & Ideas", path: "physics.html", changes: [itemLine(page.items[0])] });
   assert.deepEqual(sent[1], { file: "Record", path: "docs/record.md", changes: ["2 changes (private file: content not shared)"] });
-  assert.deepEqual(sent[2].changes, ["1 change (private file: content not shared)"]);
-  assert.ok(!JSON.stringify(sent).includes("Secret"));
+  assert.deepEqual(sent[2], { file: "Blog source", path: "docs/blog-sources/", changes: ["1 change (private file: content not shared)"] });
+  const text = JSON.stringify(sent);
+  assert.ok(!text.includes("Secret") && !text.includes("secret"), "neither the Record's text nor a post's title-derived name");
 });

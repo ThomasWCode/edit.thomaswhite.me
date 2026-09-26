@@ -93,10 +93,10 @@ function blockItems(a, b) {
   let deleted = [];
   let inserted = [];
   const flush = () => {
-    const pairs = Math.min(deleted.length, inserted.length);
-    for (let index = 0; index < pairs; index += 1) items.push({ kind: "text", before: deleted[index].text, after: inserted[index].text });
-    for (const { block } of deleted.slice(pairs)) gone.add(block.key);
-    items.push(...units("removed", a, deleted.slice(pairs)), ...units("added", b, inserted.slice(pairs)));
+    const run = pairRun(deleted, inserted);
+    for (const [from, to] of run.pairs) items.push({ kind: "text", before: from.text, after: to.text });
+    for (const { block } of run.removed) gone.add(block.key);
+    items.push(...units("removed", a, run.removed), ...units("added", b, run.added));
     deleted = [];
     inserted = [];
   };
@@ -188,18 +188,72 @@ function nowItems(a, b) {
 }
 
 // Markdown (or a page that can't be parsed): changed lines, paired within
-// each hunk as rewordings.
+// each hunk as rewordings. A change to blank lines alone is still a change.
 function lineItems(before, after) {
   const items = [];
   for (const hunk of lineHunks(before, after, 0)) {
-    const removed = hunk.rows.filter((row) => row.type === "-" && row.text.trim()).map((row) => row.text);
-    const added = hunk.rows.filter((row) => row.type === "+" && row.text.trim()).map((row) => row.text);
-    const pairs = Math.min(removed.length, added.length);
-    for (let index = 0; index < pairs; index += 1) items.push({ kind: "text", before: removed[index], after: added[index] });
-    for (const text of removed.slice(pairs)) items.push({ kind: "removed", tag: "line", text });
-    for (const text of added.slice(pairs)) items.push({ kind: "added", tag: "line", text });
+    const removed = hunk.rows.filter((row) => row.type === "-" && row.text.trim()).map((row) => ({ text: row.text }));
+    const added = hunk.rows.filter((row) => row.type === "+" && row.text.trim()).map((row) => ({ text: row.text }));
+    const { pairs, removed: gone, added: fresh } = pairRun(removed, added);
+    for (const [from, to] of pairs) items.push({ kind: "text", before: from.text, after: to.text });
+    for (const { text } of gone) items.push({ kind: "removed", tag: "line", text });
+    for (const { text } of fresh) items.push({ kind: "added", tag: "line", text });
   }
+  if (!items.length && before !== after) items.push({ kind: "spacing" });
   return items;
+}
+
+// How many words two texts share (Dice's coefficient, ignoring case): 1 for
+// the same words, 0 for none in common.
+function similarity(a, b) {
+  const words = (text) => text.toLowerCase().split(/\s+/).filter(Boolean);
+  const x = words(a);
+  const y = words(b);
+  if (!x.length || !y.length) return 0;
+  const counts = new Map();
+  for (const word of x) counts.set(word, (counts.get(word) || 0) + 1);
+  let common = 0;
+  for (const word of y) {
+    const left = counts.get(word) || 0;
+    if (left) {
+      common += 1;
+      counts.set(word, left - 1);
+    }
+  }
+  return (2 * common) / (x.length + y.length);
+}
+
+const PAIR_THRESHOLD = 0.4;
+
+// One changed run: which deleted entry became which inserted one. Pairs are
+// chosen by shared words, most alike first, in order (a later deletion never
+// pairs with an earlier insertion), so a removal or an insertion next to a
+// rewording is reported as what it is. With nothing alike, a run of equal
+// length is paired in order (a paragraph rewritten outright). Entries are
+// { text, ... }; returns { pairs: [[deleted, inserted]], removed, added }.
+function pairRun(deleted, inserted) {
+  const candidates = [];
+  deleted.forEach((from, di) =>
+    inserted.forEach((to, ii) => {
+      const score = similarity(from.text, to.text);
+      if (score >= PAIR_THRESHOLD) candidates.push({ di, ii, score });
+    }),
+  );
+  candidates.sort((x, y) => y.score - x.score || x.di - y.di);
+  let chosen = [];
+  for (const { di, ii } of candidates) {
+    const clash = chosen.some(([d, i]) => d === di || i === ii || d < di !== i < ii);
+    if (!clash) chosen.push([di, ii]);
+  }
+  if (!chosen.length && deleted.length === inserted.length) chosen = deleted.map((_, index) => [index, index]);
+  chosen.sort((x, y) => x[0] - y[0]);
+  const pairedDeleted = new Set(chosen.map(([di]) => di));
+  const pairedInserted = new Set(chosen.map(([, ii]) => ii));
+  return {
+    pairs: chosen.map(([di, ii]) => [deleted[di], inserted[ii]]),
+    removed: deleted.filter((_, index) => !pairedDeleted.has(index)),
+    added: inserted.filter((_, index) => !pairedInserted.has(index)),
+  };
 }
 
 const NOUNS = { p: ["paragraph"], li: ["list item"], line: ["line"], h2: ["heading"], h3: ["heading"], h4: ["heading"] };
@@ -258,6 +312,8 @@ export function itemLine(item) {
       return "Deleted";
     case "changed-file":
       return "Changed";
+    case "spacing":
+      return "Changed only blank lines or spacing";
     default:
       return "Changed the page's markup (no text changed)";
   }
@@ -319,6 +375,7 @@ function counts(items) {
         "new-file": plural(count, "new file"),
         "deleted-file": `${plural(count, "file")} deleted`,
         "changed-file": `${plural(count, "file")} changed`,
+        spacing: plural(count, "spacing change"),
       };
       return words[kind] || plural(count, "markup change");
     })
@@ -430,16 +487,22 @@ export function hasAutoTitle(pr, legacyTitle) {
   return pr.title === legacyTitle || (marked !== null && markable(pr.title) === marked);
 }
 
-// What an AI suggestion may see: the change lines of published files, and
-// for private files (the Record, blog sources) only how many lines changed.
+// What an AI suggestion may see: the change lines of published files. A
+// private file (the Record, a blog source) goes only as how many changes it
+// has, under a neutral name: a blog source's file name comes from its post's
+// title, so neither its label nor its path is sent.
 export function forAi(files, { lines = 20 } = {}) {
   return files
     .filter((file) => file.items.length)
-    .map((file) => ({
-      file: file.label,
-      path: file.path,
-      changes: isPrivatePath(file.path)
-        ? [`${plural(file.items.length, "change")} (private file: content not shared)`]
-        : file.items.slice(0, lines).map((item) => itemLine(item)),
-    }));
+    .map((file) => {
+      if (!isPrivatePath(file.path)) {
+        return { file: file.label, path: file.path, changes: file.items.slice(0, lines).map((item) => itemLine(item)) };
+      }
+      const record = file.path === "docs/record.md";
+      return {
+        file: record ? "Record" : "Blog source",
+        path: record ? "docs/record.md" : "docs/blog-sources/",
+        changes: [`${plural(file.items.length, "change")} (private file: content not shared)`],
+      };
+    });
 }
