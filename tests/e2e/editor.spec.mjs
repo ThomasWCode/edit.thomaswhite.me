@@ -419,6 +419,20 @@ test("typing in a block that was never finished survives a reload", async ({ pag
   await page.reload();
   await expect(frame(page).locator("p", { hasText: "Pick whatever" })).toHaveText("Pick whatever sounds a bit interesting. Unfinished");
   await expect(page.locator("#save-button")).toHaveText("Save (1)");
+
+  // In draft mode (remembered for the tab) the unfinished words are mirrored as
+  // the draft they will become, so even a crash can't make them live.
+  await page.locator("#draft-mode-button").click();
+  const anything = frame(page).locator("p", { hasText: "Anything big, small" });
+  await typeAtEnd(page, anything, " Or small.");
+  await page.waitForTimeout(1200);
+  const mirrored = await page.evaluate(() => JSON.parse(globalThis.sessionStorage.getItem("siteEditor.working.v1:ThomasWCode/ThomasWCode.github.io-revised:index.html")).working);
+  expect(mirrored).toMatch(/<p data-draft="replace">\s*Anything big, small[^<]*what you need\. Or small\.\s*<\/p>/);
+  expect(mirrored).toMatch(/<p>\s*Anything big, small[^<]*what you need\.\s*<\/p>/);
+  await page.reload();
+  await expect(page.locator("#draft-mode-button")).toHaveAttribute("aria-pressed", "true");
+  await expect(frame(page).locator('p[data-draft="replace"]')).toContainText("what you need. Or small.");
+  await expect(frame(page).locator("p:not([data-draft])", { hasText: "Anything big, small" })).not.toContainText("Or small.");
 });
 
 test("unsaved Record edits made to an older version are kept aside, not overwritten", async ({ page }) => {

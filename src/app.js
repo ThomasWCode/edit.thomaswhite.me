@@ -265,7 +265,11 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
       if (!entry || entry.kind !== "page" || entry.status !== "ready" || !live) return;
       try {
         const result = commitTextEdit(entry.model, live.key, live.snapshot);
-        if (result.changed) store.save(entry.path, storedRecord(entry, result.model.source));
+        if (!result.changed) return;
+        // In draft mode the words are kept as the draft they will become, so a
+        // reload mid-block never turns them into a live change.
+        const kept = draftMode ? asDraft(entry.model, result.model) : result.model;
+        store.save(entry.path, storedRecord(entry, kept.source));
       } catch {
         // The block's own commit reports anything wrong when it finishes.
       }
