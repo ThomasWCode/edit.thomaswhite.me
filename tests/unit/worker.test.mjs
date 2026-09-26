@@ -28,6 +28,7 @@ function json(status, value) {
 
 function setup(routes = {}, { now = NOW } = {}) {
   const calls = [];
+  const waits = [];
   let counter = 0;
   const fetch = async (input, init = {}) => {
     const url = String(input);
@@ -39,8 +40,8 @@ function setup(routes = {}, { now = NOW } = {}) {
     return route(call);
   };
   const randomBytes = (length) => Uint8Array.from({ length }, () => (counter++ * 37) % 256);
-  const handle = createHandler({ fetch, randomBytes, now: () => now });
-  return { handle, calls };
+  const handle = createHandler({ fetch, randomBytes, now: () => now, sleep: async (ms) => void waits.push(ms) });
+  return { handle, calls, waits };
 }
 
 function request(path, { method = "GET", headers = {}, body, base = WORKER } = {}) {
@@ -284,6 +285,37 @@ test("refresh rotates the token pair and re-checks the allowlist", async () => {
     refresh_token: "ghr_refresh",
   });
   assert.equal(calls[1].headers.get("Authorization"), "Bearer ghu_new");
+});
+
+test("refresh retries a passing identity-check failure, since the old refresh token is already spent", async () => {
+  const rotated = { ...TOKENS, access_token: "ghu_new", refresh_token: "ghr_new" };
+  const headers = { Origin: EDITOR, "Content-Type": "application/json" };
+  const body = JSON.stringify({ refresh_token: "ghr_refresh" });
+  const flaky = (failures) => {
+    const left = [...failures];
+    return {
+      [`GET https://api.github.com/user`]: () => {
+        const failure = left.shift();
+        if (failure === "network") throw new TypeError("fetch failed");
+        return failure ? json(failure, { message: "error" }) : json(200, TOM);
+      },
+    };
+  };
+
+  const recovered = setup({ ...tokenRoute(rotated), ...flaky(["network", 502]) });
+  const response = await recovered.handle(request("/refresh", { method: "POST", headers, body }), ENV);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).refresh_token, "ghr_new");
+  assert.deepEqual(recovered.waits, [250, 1000]);
+  assert.equal(recovered.calls.filter((call) => call.url.endsWith("/user")).length, 3);
+
+  const outage = setup({ ...tokenRoute(rotated), ...flaky([503, 503, 503]) });
+  assert.equal((await outage.handle(request("/refresh", { method: "POST", headers, body }), ENV)).status, 502);
+  assert.equal(outage.calls.filter((call) => call.url.endsWith("/user")).length, 3, "three attempts, then give up");
+
+  const refused = setup({ ...tokenRoute(rotated), ...flaky([401]) });
+  assert.equal((await refused.handle(request("/refresh", { method: "POST", headers, body }), ENV)).status, 502);
+  assert.deepEqual(refused.waits, [], "a 401 is not a passing failure");
 });
 
 test("refresh reports a spent refresh token as 401 and a stranger as 403 with the grant revoked", async () => {

@@ -16,6 +16,8 @@ const GITHUB_API = "https://api.github.com";
 const USER_AGENT = "site-editor-auth (+https://edit.thomaswhite.me)";
 const STATE_MAX_AGE_SECONDS = 600;
 const CORS_PATHS = new Set(["/refresh", "/logout"]);
+// Waits before retrying the identity check after a passing GitHub failure.
+const USER_RETRY_DELAYS_MS = [250, 1000];
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -165,7 +167,7 @@ function corsHeaders(origin) {
   return { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
 }
 
-export function createHandler({ fetch, randomBytes, now }) {
+export function createHandler({ fetch, randomBytes, now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
   const nowSeconds = () => Math.floor(now() / 1000);
 
   function githubHeaders(extra = {}) {
@@ -201,13 +203,28 @@ export function createHandler({ fetch, randomBytes, now }) {
     return result;
   }
 
+  // The identity check after an exchange. By then a refresh has already
+  // rotated the refresh token, so giving up on a passing failure (the network,
+  // a 5xx, a 429) would lose the new pair and sign the editor out: those are
+  // retried twice. Anything else, or a third failure, returns null.
   async function getUser(accessToken) {
-    const response = await fetch(`${GITHUB_API}/user`, {
-      headers: githubHeaders({ Authorization: `Bearer ${accessToken}` }),
-    });
-    if (!response.ok) return null;
-    const user = await response.json();
-    return { id: user.id, login: user.login };
+    for (let attempt = 0; ; attempt += 1) {
+      let response = null;
+      try {
+        response = await fetch(`${GITHUB_API}/user`, {
+          headers: githubHeaders({ Authorization: `Bearer ${accessToken}` }),
+        });
+      } catch {
+        response = null;
+      }
+      if (response && response.ok) {
+        const user = await response.json();
+        return { id: user.id, login: user.login };
+      }
+      const passing = !response || response.status >= 500 || response.status === 429;
+      if (!passing || attempt >= USER_RETRY_DELAYS_MS.length) return null;
+      await sleep(USER_RETRY_DELAYS_MS[attempt]);
+    }
   }
 
   async function revoke(config, kind, accessToken) {
