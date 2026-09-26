@@ -144,8 +144,14 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
           finishEditing();
           return;
         }
-        if (block) startEditing(block);
-        else finishEditing();
+        if (block) {
+          startEditing(block);
+          // Focus it before the click's own handling places the caret. Firefox
+          // otherwise leaves focus on the frame's body when the click follows
+          // one on the editor's controls (the Drafts toggle, Undo), and typing
+          // goes nowhere.
+          if (doc.activeElement !== block) block.focus({ preventScroll: true });
+        } else finishEditing();
       },
       options,
     );
