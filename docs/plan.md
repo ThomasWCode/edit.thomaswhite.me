@@ -9,6 +9,15 @@ Approved on 25 September 2026 after five clarifying questions. This copy is the 
 - 25 September 2026, evening: Tom enabled GitHub Pages on this repository (source `main`, root, legacy build) with the custom domain and Enforce HTTPS. The certificate is approved and the domain protected; GitHub committed a `CNAME` file to the remote `main`, and the local commits sit on top of it.
 - 26 September 2026: built, stages 2 to 12, on the local branch `build-editor`. Tom ran `npx wrangler login`; the session deployed the Worker and stored the client secret from Tom's `GITHUB_HOMEPAGE_CLIENT_SECRET` user environment variable with `wrangler secret put` (never printed). Checked live: the health check reports the secret set, `/login` redirects to GitHub with state and PKCE, and a bogus code comes back as `bad_verification_code` (GitHub accepts the client credentials). Locally: 122 unit tests, and 15 Playwright journeys in Chromium, Firefox and WebKit against the in-memory fake GitHub. Next: the pull request into `main` (Codex review), then Tom's live checks in `docs/setup.md`, then the preview repository's documentation pull request.
 - 26 September 2026, later: pull request #1 opened. Codex's first review raised nine points, all fixed: Save waits until every page has loaded (one retry, then it stops); a stale Markdown draft is kept aside like a page's; relative links are refused with their root form as the fix; a Save retried after a lost response is recognised; an emptied Markdown file is refused; a pull request merged or closed on GitHub is followed; the merge keeps `edits` when another device saved on top of it (the P1); the block being typed is mirrored to sessionStorage; the tab fixes keep other `rel` tokens. Found alongside: a merged `edits` left behind by a merge on GitHub is deleted at load. Locally: 128 unit tests, and 18 Playwright journeys in all three engines.
+- 26 September 2026, later still: Codex's second review raised six points, all fixed:
+  - Edits kept aside survive a Save. Also found: a second change on GitHub, or the conflict dialog's Reload, no longer drops them.
+  - The Worker retries the identity check after a refresh, whose old token is already spent.
+  - The baseline run is identified by ID rather than by time.
+  - External `srcset` candidates aren't checked as repository files.
+  - Update from main waits for GitHub's merge and reloads the files.
+  - A placeholder is recognised by its text, so adding an item above it doesn't skip the Done confirmation. Revert is withheld once items have been added or removed.
+
+  Locally: 132 unit tests, and 19 journeys.
 
 ### Where the build differs from this plan
 
