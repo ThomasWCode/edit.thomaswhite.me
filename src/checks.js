@@ -285,6 +285,15 @@ export function checkPage(model, original, context) {
   }
 
   findings.push(...protectedChanges(model, original));
+  // As the site's contract: a new draft that is all its list item or paragraph
+  // holds would leave it empty on thomaswhite.me.
+  for (const draft of model.drafts) {
+    const parent = draft.node.parentNode;
+    if (draft.kind !== "new" || !parent || !["li", "p"].includes(parent.tagName)) continue;
+    if (collapse(textOf(parent)) === collapse(textOf(draft.node))) {
+      findings.push(finding(model, "block", "draft-alone", `This draft is all its ${parent.tagName === "li" ? "list item" : "paragraph"} holds, which would stay empty on the live site. Make the whole ${parent.tagName === "li" ? "item" : "paragraph"} a draft instead.`, draft.node));
+    }
+  }
   findings.push(...warnings(model, original, lines));
   return dedupe(findings);
 }
@@ -297,6 +306,15 @@ function dedupe(findings) {
     seen.add(id);
     return true;
   });
+}
+
+// Inside a "new" or "replace" draft (drafting.js): not live content.
+function inEditorDraft(node) {
+  for (let item = node; item && item.attrs; item = item.parentNode) {
+    const kind = attribute(item, "data-draft");
+    if (kind === "new" || kind === "replace") return true;
+  }
+  return false;
 }
 
 // Anything outside main, and every locked block, must be byte-identical.
@@ -313,10 +331,12 @@ function protectedChanges(model, original) {
     findings.push({ level: "block", code: "outside-main", message: "Something outside the page's main content changed.", key: null, line: null });
   }
   // The Updated line is locked against typing but rewritten by the Now helper;
-  // the now-updated check verifies it instead.
+  // the now-updated check verifies it instead. A live element locked because a
+  // new version of it waits as a draft is locked for editing, not for content,
+  // and copies inside drafts aren't live content.
   const locked = (m) =>
     m.blocks
-      .filter((block) => block.lock && block.lock !== LOCK_REASONS.nowUpdated)
+      .filter((block) => block.lock && block.lock !== LOCK_REASONS.nowUpdated && block.lock !== LOCK_REASONS.replaced && !inEditorDraft(block.node))
       .map((block) => m.source.slice(block.node.sourceCodeLocation.startOffset, block.node.sourceCodeLocation.endOffset));
   const lockedNow = locked(model);
   const lockedThen = locked(original);
@@ -357,7 +377,10 @@ function warnings(model, original, lines) {
   }
 
   const changedBlocks = model.blocks.filter((block) => onChangedLine(block.node, lines));
-  const nowChanged = changedBlocks.some((block) => block.inNow && !classTokens(block.node).includes("now-updated"));
+  // Only the live Now section: a draft copy of it carries its own month.
+  const nowNode = model.now ? model.nodeOf.get(model.now.key) : null;
+  const inLiveNow = (node) => [node, ...ancestorsOf(node, model.main)].includes(nowNode);
+  const nowChanged = changedBlocks.some((block) => nowNode && inLiveNow(block.node) && !classTokens(block.node).includes("now-updated"));
   if (nowChanged && model.now && original.now && model.now.updated === original.now.updated) {
     findings.push(finding(model, "warn", "now-helper", "A Now line changed but the Updated month didn't. Use the Now helper.", model.nodeOf.get(model.now.key), { fix: "now" }));
   }
