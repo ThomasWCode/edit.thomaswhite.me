@@ -4,10 +4,11 @@
 
 import { MONTHS } from "./edits.js";
 
-// LF line endings and exactly one final newline (an empty file stays empty).
+// LF line endings and exactly one final newline, even for an emptied file
+// (the Save dialog refuses to save an empty one anyway).
 export function normaliseMarkdown(text) {
   const lf = text.replace(/\r\n?/g, "\n");
-  if (!lf.trim()) return "";
+  if (!lf.trim()) return "\n";
   return `${lf.replace(/\n+$/, "")}\n`;
 }
 

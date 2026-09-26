@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { completeDraft, EditRejectedError, removeAttribute, setAttribute, setNowUpdated, updatedLabel } from "../../src/edits.js";
+import {
+  completeDraft,
+  EditRejectedError,
+  openInNewTab,
+  openInSameTab,
+  removeAttribute,
+  setAttribute,
+  setNowUpdated,
+  updatedLabel,
+} from "../../src/edits.js";
 import { blockText, textOf } from "../../src/page-model.js";
 import { lineChanges, loadModel } from "../support/fixtures.mjs";
 
@@ -128,6 +137,27 @@ test("removeAttribute takes the attribute and the whitespace before it", () => {
   const text = textOf(next.nodeOf.get(dusty.key));
   assert.equal(text, "his own website");
   assert.equal(removeAttribute(home, dusty.key, "download"), home);
+});
+
+test("the tab fixes add or remove only noopener and noreferrer, keeping other rel tokens", () => {
+  const home = loadModel("index.html");
+  const reading = home.links.find((link) => link.href === "/physics/#reading");
+  const tagged = setAttribute(home, reading.key, "rel", "nofollow author");
+  const external = openInNewTab(tagged, reading.key);
+  const node = external.nodeOf.get(reading.key);
+  const attr = (name) => node.attrs.find((item) => item.name === name)?.value;
+  assert.equal(attr("target"), "_blank");
+  assert.equal(attr("rel"), "nofollow author noopener noreferrer");
+
+  const back = openInSameTab(external, reading.key);
+  const again = back.nodeOf.get(reading.key);
+  assert.equal(again.attrs.find((item) => item.name === "target"), undefined);
+  assert.equal(again.attrs.find((item) => item.name === "rel").value, "nofollow author");
+
+  const dusty = home.links.find((link) => link.href === "https://dusty.thomaswhite.me");
+  const plain = openInSameTab(home, dusty.key).nodeOf.get(dusty.key);
+  assert.equal(plain.attrs.some((item) => item.name === "rel" || item.name === "target"), false, "a rel left empty is removed");
+  assert.equal(openInNewTab(home, dusty.key).source, home.source, "already new-tab: no change");
 });
 
 test("read-only pages refuse draft and attribute changes", () => {

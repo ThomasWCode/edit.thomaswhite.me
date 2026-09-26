@@ -123,8 +123,25 @@ export function isExternalRedirect(model) {
   return external;
 }
 
+// "contact.html" or "../blog/": no scheme, not from the root, not an anchor.
+const isRelative = (href) => href !== "" && !/^[a-z][a-z0-9+.-]*:/i.test(href) && !/^[/#?]/.test(href);
+
 function checkLink(model, node, context, lines, findings, tabRule) {
   const href = attribute(node, "href") || "";
+  // The site writes every link from the root (AGENTS.md there), and its CI
+  // classifies links by that path, so a relative one would be misjudged by
+  // both the tab rule and the missing-file check. Offer the root form.
+  if (isRelative(href)) {
+    const resolved = new URL(href, `https://site.invalid${model.permalink || "/"}`);
+    const value = `${resolved.pathname}${resolved.search}${resolved.hash}`;
+    findings.push(
+      finding(model, "block", "relative-link", `“${href}” is a relative address; the site writes links from the root: “${value}”.`, node, {
+        fix: "absolute",
+        value,
+      }),
+    );
+    return;
+  }
   let pathname;
   try {
     pathname = decodeURIComponent(href.split(/[?#]/)[0]);

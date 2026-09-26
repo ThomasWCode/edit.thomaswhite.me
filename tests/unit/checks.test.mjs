@@ -76,6 +76,20 @@ test("blocking: the new-tab rule for links, both ways", () => {
   assert.deepEqual(codes(check(setAttribute(home, dusty.key, "href", "https://github.com/ThomasWCode")), "block"), []);
 });
 
+test("blocking: a relative link, with its root form as the fix", () => {
+  const blog = originals.get("blog/index.html");
+  const link = blog.links.find((item) => item.href.startsWith("/blog/"));
+  const findings = check(setAttribute(blog, link.key, "href", "how-this-site-works/#top"));
+  assert.deepEqual(codes(findings, "block"), ["relative-link"]);
+  assert.equal(findings[0].fix, "absolute");
+  assert.equal(findings[0].value, "/blog/how-this-site-works/#top");
+  const home = originals.get("index.html");
+  const reading = home.links.find((item) => item.href === "/physics/#reading");
+  const up = check(setAttribute(home, reading.key, "href", "../contact/"));
+  assert.equal(up.find((item) => item.code === "relative-link").value, "/contact/");
+  assert.deepEqual(codes(check(setAttribute(home, reading.key, "href", "mailto:tom@thomaswhite.me")), "block"), ["link-same-tab"], "a scheme is not relative");
+});
+
 test("blocking: local references must be pages or repository files; anchors must exist", () => {
   const home = originals.get("index.html");
   const reading = home.links.find((link) => link.href === "/physics/#reading");

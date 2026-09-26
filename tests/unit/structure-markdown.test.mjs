@@ -131,7 +131,8 @@ test("Markdown keeps its bytes: LF, one final newline, nothing else touched", ()
   }
   assert.equal(normaliseMarkdown("# Title\n\n\n"), "# Title\n");
   assert.equal(normaliseMarkdown("# Title"), "# Title\n");
-  assert.equal(normaliseMarkdown("  \n"), "");
+  assert.equal(normaliseMarkdown("  \n"), "\n", "an emptied file still ends with a newline");
+  assert.equal(normaliseMarkdown(""), "\n");
 });
 
 test("a new post source follows the blog-sources template", () => {

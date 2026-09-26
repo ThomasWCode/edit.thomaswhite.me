@@ -236,6 +236,27 @@ export function removeAttribute(model, key, name) {
   return applyToModel(model, [removeAttributeSplice(model, node, name)]);
 }
 
+// Adds and removes rel tokens, keeping any others (nofollow, ugc, author…).
+export function updateRel(model, key, { add = [], remove = [] } = {}) {
+  const node = requireEditable(model, key);
+  const tokens = (attribute(node, "rel") || "").split(/[ \t\n\f\r]+/).filter(Boolean);
+  const lower = (list) => list.map((token) => token.toLowerCase());
+  const kept = tokens.filter((token) => !lower(remove).includes(token.toLowerCase()));
+  const next = [...kept, ...add.filter((token) => !lower(kept).includes(token.toLowerCase()))];
+  if (!next.length) return removeAttribute(model, key, "rel");
+  return setAttribute(model, key, "rel", next.join(" "));
+}
+
+// The site's new-tab rule: other sites, documents and mailto open in a new
+// tab with noopener; the site's own pages open in place.
+export function openInNewTab(model, key) {
+  return updateRel(setAttribute(model, key, "target", "_blank"), key, { add: ["noopener", "noreferrer"] });
+}
+
+export function openInSameTab(model, key) {
+  return updateRel(removeAttribute(model, key, "target"), key, { remove: ["noopener", "noreferrer"] });
+}
+
 // ---- Drafts -----------------------------------------------------------------
 
 // Done on a written draft: a note loses data-draft and its draft-note class; an
