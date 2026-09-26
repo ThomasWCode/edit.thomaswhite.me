@@ -16,10 +16,10 @@
   outline-color: rgba(33, 78, 59, 0.35);
 }
 
+/* No background while typing: a light tint would wash out light text on the
+   site's dark sections. The gold selected outline shows which block is live. */
 [data-edit-role~="block"][contenteditable="true"] {
   outline: 2px solid #214e3b;
-  background-color: rgba(229, 236, 223, 0.6);
-  caret-color: #214e3b;
 }
 
 [data-edit-role~="block"][data-edit-changed] {

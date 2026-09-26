@@ -217,6 +217,10 @@ h3 {
   gap: 0.6rem;
 }
 
+.sidebar-toggle {
+  display: none;
+}
+
 .topbar-name {
   font-weight: 800;
 }
@@ -310,6 +314,7 @@ h3 {
 }
 
 .sidebar {
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 0.75rem;
   border-right: 1px solid var(--line);
@@ -330,6 +335,7 @@ h3 {
 
 .file-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 1px;
   margin: 0 0 0.5rem;
   padding: 0;
@@ -596,6 +602,27 @@ h3 {
   .topbar-status {
     order: 3;
     flex-basis: 100%;
+  }
+
+  /* On a phone the page itself gets the room: no site link, file path or
+     width toggle, and a shorter panel. */
+  .topbar {
+    padding: 0.4rem 0.75rem;
+  }
+
+  .topbar-site,
+  .stage-path,
+  #width-toggle {
+    display: none;
+  }
+
+  .stage-bar {
+    padding: 0.35rem 0.75rem;
+  }
+
+  .panel {
+    max-height: 32dvh;
+    padding: 0.75rem;
   }
 }
 
@@ -1002,4 +1029,11 @@ textarea.text-input {
 .dev-panel-status {
   margin: 0;
   color: var(--muted);
+}
+
+.panel-row-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
 }

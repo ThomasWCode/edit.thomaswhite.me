@@ -23,6 +23,15 @@ const DEPLOY_POLL_MS = 15_000;
 const UNDO_LIMIT = 50;
 const PREFETCH_CONCURRENCY = 4;
 
+// Collapsed text cut at a word boundary, with an ellipsis when shortened.
+export function snippet(text, length) {
+  const clean = collapse(text);
+  if (clean.length <= length) return clean;
+  const cut = clean.slice(0, length);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > length / 2 ? cut.slice(0, space) : cut).replace(/[\s,.;:]+$/, "")}…`;
+}
+
 const BLOCK_NAMES = {
   p: "Paragraph", li: "List item", h1: "Main heading", h2: "Heading", h3: "Subheading", h4: "Label",
   figcaption: "Caption", blockquote: "Quote", a: "Link text", span: "Text", aside: "Aside", div: "Text",
@@ -443,6 +452,13 @@ export function createApp({ target, client, user, onSignedOut }) {
     if (confirmed) await applyOperation(`Removed a ${what}`, (model) => removeBlock(model, key));
   }
 
+  // "Done" alone is ambiguous when a paragraph holds several inline drafts,
+  // so an inline one is named by its first words.
+  function draftLabel(draft, blockKey) {
+    if (draft.kind === "check") return draft.key === blockKey ? "Approve" : `Approve “${snippet(textOf(draft.node), 18)}”`;
+    return draft.key === blockKey ? "Done" : `Done: “${snippet(textOf(draft.node), 18)}”`;
+  }
+
   function toolbarActions(key) {
     const entry = current();
     if (!entry || !entry.model || entry.model.readOnly) return [];
@@ -451,8 +467,8 @@ export function createApp({ target, client, user, onSignedOut }) {
     const actions = [];
     for (const draft of entry.model.drafts.filter((item) => item.key === key || item.blockKey === key)) {
       actions.push({
-        label: draft.kind === "check" ? "Approve" : "Done",
-        title: draft.kind === "check" ? "Approve this checked draft" : "Mark this draft done",
+        label: draftLabel(draft, key),
+        title: `${draft.kind === "check" ? "Approve" : "Mark done"}: ${snippet(textOf(draft.node), 120)}`,
         kind: "draft",
         run: () => runDraft(draft.key),
       });
@@ -1113,6 +1129,7 @@ export function createApp({ target, client, user, onSignedOut }) {
           "div",
           { class: "panel-row" },
           h("span", { class: `tag tag--${draft.kind}` }, draft.kind === "check" ? "To check" : "To write"),
+          draft.key === key ? null : h("span", { class: "panel-row-text" }, `“${snippet(textOf(draft.node), 40)}”`),
           button(draft.kind === "check" ? "Approve" : "Done", () => runDraft(draft.key), { small: true }),
         ),
       );
@@ -1235,7 +1252,7 @@ export function createApp({ target, client, user, onSignedOut }) {
               "li",
               { class: "draft-item" },
               h("span", { class: `tag tag--${draft.kind}` }, draft.kind === "check" ? "Check" : "Write"),
-              h("button", { type: "button", class: "draft-go", onClick: () => goTo(entry.path, draft.blockKey || draft.key) }, collapse(textOf(draft.node)).slice(0, 90) || "(empty)"),
+              h("button", { type: "button", class: "draft-go", onClick: () => goTo(entry.path, draft.blockKey || draft.key) }, snippet(textOf(draft.node), 80) || "(empty)"),
               model.readOnly ? null : button(draft.kind === "check" ? "Approve" : "Done", () => runDraft(draft.key), { small: true }),
             ),
           ),
