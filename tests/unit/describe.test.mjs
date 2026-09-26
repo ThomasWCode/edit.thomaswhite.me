@@ -184,6 +184,15 @@ test("drafts: saved, published, discarded and taken off the live site are told a
   assert.deepEqual(described(linkDraft, discardDraft(linkDraft, linkCopy)).items.map((item) => item.kind), ["draft-discarded"]);
   assert.ok(!described(linkDraft, publishDraft(linkDraft, linkCopy)).items.some((item) => item.kind === "draft-discarded"));
 
+  // A new version of a gallery figure differs only in a button's caption,
+  // deep inside it: publishing is the caption change, with nothing discarded.
+  const gallery = loadModel("gallery.html");
+  const photo = gallery.images.find((item) => item.gallery);
+  const captionDraft = asDraft(gallery, setAttribute(gallery, photo.gallery.buttonKey, "data-caption", "A new caption"));
+  const figureCopy = captionDraft.drafts.find((draft) => draft.kind === "replace").key;
+  assert.ok(!described(captionDraft, publishDraft(captionDraft, figureCopy)).items.some((item) => item.kind === "draft-discarded"));
+  assert.deepEqual(described(captionDraft, discardDraft(captionDraft, figureCopy)).items.map((item) => item.kind), ["draft-discarded"]);
+
   // A new phrase whose words appear all over the page: discarded, then published.
   const pick = blockKeyStarting(home, "Pick whatever");
   const at = blockText(home, pick).indexOf(" a bit") + 1;

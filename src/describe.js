@@ -6,7 +6,18 @@
 import { lineHunks, trimEqualRuns, wordDiff } from "./diff-view.js";
 import { liveSource } from "./drafting.js";
 import { updatedLabel } from "./edits.js";
-import { attribute, blockText, buildPageModel, collapse, EDITOR_DRAFT_KINDS, elementChildren, pageTitle, previousElementSibling, textOf } from "./page-model.js";
+import {
+  attribute,
+  blockText,
+  buildPageModel,
+  collapse,
+  EDITOR_DRAFT_KINDS,
+  elementChildren,
+  isElement,
+  pageTitle,
+  previousElementSibling,
+  textOf,
+} from "./page-model.js";
 import { diffSequences } from "./sequence-diff.js";
 import { fallbackLabel, labelFromTitle } from "./site-files.js";
 
@@ -112,14 +123,42 @@ function editorDrafts(model) {
     });
 }
 
-// An element as the live site shows it (tag, attributes without a draft's
-// marker and with renamed ids named back, and words), or, for a phrase's bare
-// span, which the live site unwraps, just its words.
+const bareSpan = (node) => node.tagName === "span" && !(node.attrs || []).some((attr) => attr.name !== "data-draft");
+
+// An element as the live site shows it, descendants included: tag, attributes
+// (without a draft's marker, with renamed ids named back) and content, with
+// the drafts inside left out, a removal's marker gone and a phrase's bare span
+// unwrapped. Whitespace in text is dropped, so the spacing a left-out draft
+// takes with it never makes two versions differ. `memo` saves repeats.
+function liveMarkup(node, memo = new Map()) {
+  if (memo.has(node)) return memo.get(node);
+  const named = (node.attrs || [])
+    .filter((attr) => attr.name !== "data-draft")
+    .map((attr) => `${attr.name === "data-draft-id" ? "id" : attr.name}="${attr.value}"`)
+    .sort();
+  const markup = `<${node.tagName} ${named.join(" ")}>${liveContent(node, memo)}</${node.tagName}>`;
+  memo.set(node, markup);
+  return markup;
+}
+
+function liveContent(node, memo) {
+  let content = "";
+  for (const child of node.childNodes || []) {
+    if (child.nodeName === "#text") content += child.value.replace(/\s+/g, "");
+    else if (isElement(child)) {
+      const kind = attribute(child, "data-draft");
+      if (kind === "remove" && bareSpan(child)) content += liveContent(child, memo);
+      else if (kind === null || kind === "remove") content += liveMarkup(child, memo);
+    }
+  }
+  return content;
+}
+
+// What publishing a draft changes, as something to count in the live views:
+// an element as the live site shows it, or, for a phrase's bare span, which
+// the live site unwraps, just its words.
 function publishSign(node) {
-  const attrs = (node.attrs || []).filter((attr) => attr.name !== "data-draft");
-  if (node.tagName === "span" && !attrs.length) return { words: collapse(textOf(node)) };
-  const named = attrs.map((attr) => `${attr.name === "data-draft-id" ? "id" : attr.name}="${attr.value}"`).sort();
-  return { element: `<${node.tagName} ${named.join(" ")}>${collapse(textOf(node))}` };
+  return bareSpan(node) ? { words: collapse(textOf(node)) } : { element: liveMarkup(node) };
 }
 
 const signCounts = new WeakMap();
@@ -129,10 +168,11 @@ function occurrences(model, sign) {
   if (sign.words !== undefined) return sign.words ? collapse(textOf(root)).split(sign.words).length - 1 : 0;
   if (!signCounts.has(model)) {
     const counts = new Map();
+    const memo = new Map();
     const visit = (node) => {
       for (const child of elementChildren(node)) {
-        const { element } = publishSign(child);
-        if (element) counts.set(element, (counts.get(element) || 0) + 1);
+        const markup = liveMarkup(child, memo);
+        counts.set(markup, (counts.get(markup) || 0) + 1);
         visit(child);
       }
     };
