@@ -7,7 +7,7 @@ What was built, in enough detail to change it safely. The approved plan is [`pla
 | Piece | Where | What it does |
 | --- | --- | --- |
 | Editor site | this repository, published by GitHub Pages at `https://edit.thomaswhite.me` | Static page: `index.html`, `editor.css`, `frame.css`, ES modules in `src/`, the vendored parser in `vendor/`. No framework, no build step, no runtime CDN. |
-| Sign-in Worker | `worker/index.mjs`, deployed as `site-editor-auth` to `https://site-editor-auth.thomaswhite.workers.dev` | Holds the GitHub App's client secret and does the OAuth handshake. Stores nothing. |
+| Sign-in Worker | `worker/index.mjs`, deployed as `site-editor-auth` to `https://site-editor-auth.thomaswhite.workers.dev` | Holds the GitHub App's client secret and does the OAuth handshake; holds the Groq key and answers the AI suggestions (`/describe`). Stores nothing. |
 | GitHub App | "Homepage Site Editor" (App ID 5079588, client ID `Iv23lixP9BDtnDivY3vr`), owned by ThomasWCode | Installed on the target repository only. Its user tokens can do what Tom can do, and only in installed repositories. |
 | Target repository | `src/config.js`, `active` | `ThomasWCode/ThomasWCode.github.io-revised` (published at `new.thomaswhite.me`) until the content-strategy merge, then `ThomasWCode/ThomasWCode.github.io` (see "Switching targets"). |
 
@@ -28,6 +28,8 @@ Browser modules (`src/*.js`) load in the page; files ending in `.mjs` (scripts, 
 | `structure.js` | Adding and removing paragraphs and list items. |
 | `checks.js` | The pre-save checks. |
 | `diff-view.js` | The Save dialog's word runs and line hunks. |
+| `describe.js` | What changed, in words: commit messages, pull request titles and descriptions, and what the AI suggestions may see. |
+| `suggest.js` | Asks the Worker's `/describe` for an AI suggestion. |
 | `markdown-files.js` | The Record and blog-source tabs. |
 | `site-files.js` | Which files are pages, their order and labels, and which are read-only. |
 | `config.js` | The targets, the Worker URL and the App's public identifiers. |
@@ -43,7 +45,7 @@ Browser modules (`src/*.js`) load in the page; files ending in `.mjs` (scripts, 
 
 Why localStorage and not a cookie: a refresh-token cookie would be a third-party cookie on `workers.dev`, which Safari blocks and Firefox partitions. The defence is that nothing can run script on the editor's origin: a strict CSP, no inline or third-party script, and a preview frame that runs no script at all.
 
-The Worker answers `GET /` with `site-editor-auth is running. Client secret: set.` (or `missing`), which is the quickest check after a deploy or a secret change. Every response carries `Cache-Control: no-store`, `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`; `/refresh` and `/logout` answer CORS only for the exact editor origins.
+The Worker answers `GET /` with `site-editor-auth is running. Client secret: set. AI suggestions: on (openai/gpt-oss-120b).` (or `missing`, `off`), which is the quickest check after a deploy or a secret change. Every response carries `Cache-Control: no-store`, `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`; `/refresh`, `/logout` and `/describe` answer CORS only for the exact editor origins.
 
 ## From a click to a one-line diff
 
@@ -93,21 +95,68 @@ The Save dialog then shows, per file, the changed blocks as word runs and the ra
 
 `publish-flow.js` is a state machine the interface renders: `loading → ready ⇄ saving`, and from `ready`: `baselines? → opening-pr → checking → publishable | attention → publishing → published`. One GitHub mutation runs at a time; every write re-reads the ref it depends on first.
 
-**Save** makes one commit of every changed file on `edits` through the Git Data API (`POST /git/trees` with a `base_tree`, `POST /git/commits`, then `PATCH /git/refs/heads/edits` with `force: false`), creating `edits` from `main` when missing. The message is "Edit N files in the editor" with the list. If `edits` moved since the files were loaded, each file's blob on the new head is compared with the one loaded: unchanged (the baseline bot only touches PNGs) → the commit goes on top; changed → a conflict dialog offers to reload those files (their unsaved edits are kept aside, as above) or save the others. A non-fast-forward during the write is retried from the new head, up to three times. Each file's new blob SHA is computed before writing, and a file whose blob on the head already matches counts as saved, so a Save retried after a lost response neither reports a conflict with itself nor commits twice. Once the branch has moved, the save has happened: a follow-up read that fails (the branch summary, the pull request body) is reported as such, not as a failed save. Without an open pull request nothing runs on GitHub; with one, the push runs its CI (a person's push to a pull request's branch always does).
+**Save** makes one commit of every changed file on `edits` through the Git Data API (`POST /git/trees` with a `base_tree`, `POST /git/commits`, then `PATCH /git/refs/heads/edits` with `force: false`), creating `edits` from `main` when missing. The message is the one in the Save dialog's **Commit message** and **Details** boxes, prefilled by `describe.js` (see "Commit messages and pull requests"). If `edits` moved since the files were loaded, each file's blob on the new head is compared with the one loaded: unchanged (the baseline bot only touches PNGs) → the commit goes on top; changed → a conflict dialog offers to reload those files (their unsaved edits are kept aside, as above) or save the others. A non-fast-forward during the write is retried from the new head, up to three times. Each file's new blob SHA is computed before writing, and a file whose blob on the head already matches counts as saved, so a Save retried after a lost response neither reports a conflict with itself nor commits twice. Once the branch has moved, the save has happened: a follow-up read that fails (the branch summary, the pull request body) is reported as such, not as a failed save. Without an open pull request nothing runs on GitHub; with one, the push runs its CI (a person's push to a pull request's branch always does).
 
 **Publish** (only when nothing is unsaved):
 
 1. If a page captured by a visual baseline changed (`index.html`, `programming.html`, `gallery.html`) and the head is not already the bot's commit, it dispatches **Update visual baselines** on `edits` and polls its run (every 15 seconds, 30 minutes at most), then links the regenerated PNGs. The dispatch doesn't name its run and GitHub lists it a few seconds later, so the run followed is the first one not listed before the dispatch, never an earlier run on the branch.
-2. It opens the pull request "Text edits from the editor" (which starts CI by itself), or updates an open one's body. A commit pushed by the baseline workflow's `GITHUB_TOKEN` starts no workflow, so for an already-open pull request moved by the bot it dispatches **Test suite** (`ci.yml`). Never both.
+2. It opens the pull request from `edits` with the title and description in the Publish dialog (which starts CI by itself), or refreshes an open one's. A commit pushed by the baseline workflow's `GITHUB_TOKEN` starts no workflow, so for an already-open pull request moved by the bot it dispatches **Test suite** (`ci.yml`). Never both.
 3. It polls the pull request and the latest run of each required check ("Static contracts and lint", "Browser and visual tests", "Lighthouse budgets") every 30 seconds while the tab is visible, or at once with **Refresh**. `mergeable: null` is retried. Publishable = every required check passed and `mergeable` is true. A failed check shows its link; a failed browser job on a captured page offers **Refresh screenshots** (baselines, then CI). A conflict with `main` asks for a Claude session. **Update from main** appears when `edits` is behind; it needs everything saved, asks GitHub to merge `main` in (`update-branch`, which answers before merging), waits for `edits` to move, and reloads the files from it, so nothing is checked or saved against the old ones. **Start checks** appears when no check has started on the head (for example if `update-branch` does not trigger the workflow). A pull request merged or closed on GitHub itself is followed, on the next poll, on returning to the tab, or at start-up: merged → the published state and a reload from `main`; closed → back to ready, with the saves still on `edits` for the next Publish.
 4. **Merge** passes the head SHA whose checks passed (GitHub refuses with 409 if it moved; the flow re-checks), merges with a merge commit, deletes `edits` unless another tab or device has saved on top of the merged head meanwhile (then it is kept, with those saves, for the next Publish), follows the `pages-build-deployment` run and reloads from `main`.
 
 Actions cost per publish in the site repository: about 19 Windows-weighted minutes for the pull request's CI, about 19 more for the push-to-main CI after the merge (the site's existing policy), about 3 for Pages, plus about 4 when baselines are refreshed. Saving costs nothing until a pull request is open.
 
+## Commit messages and pull requests
+
+`describe.js` reads each changed file as it was and as it is. For a page it lines up the blocks of both versions by their text (a sequence diff, so an added item doesn't make every later block look changed), and reports:
+
+- rewordings as trimmed before → after excerpts;
+- paragraphs, list items and headings added or removed;
+- drafts finished or approved (fewer of a kind, not counting drafts whose block was removed);
+- link addresses and tabs, alt text, gallery captions;
+- the Now month.
+
+Markdown gets changed lines.
+
+- **The subject** (a commit's first line, a pull request's title) is the most specific of these that fits in 72 characters:
+  - the one small change everywhere, such as `“see” → “watch” on Physics & Ideas and Programming`;
+  - one change, named: `Programming: finish the draft “Two or three screenshots of the…”`;
+  - the pages and counts: `Programming and Physics & Ideas: 2 wording changes`;
+  - `Edit 3 pages and the Record: …`.
+- **The Save dialog** prefills **Commit message** with the subject and **Details** with a line per change, grouped by file. Both are editable. Saving the other files after a conflict uses the generated message.
+- **The Publish dialog** describes the whole branch as the pull request shows it, from the merge base with `main` to `edits`, and lists files in the editor's order. It prefills **Pull request title** and leaves **Description** for an optional note.
+- **The pull request's description** has three parts:
+  - your note;
+  - the list of changes (and any regenerated screenshots) between `<!-- editor:changes -->` markers;
+  - the Record reminder, and the generated title in an `<!-- editor:title … -->` comment.
+
+  Page text in it is escaped, and an `@` gets a zero-width space so nothing mentions anyone.
+- **Every later save refreshes the list**, keeping your note. It updates the title only while it is still the generated one (or the old fixed "Text edits from the editor"); a title you set, in the dialog or on GitHub, is kept. **Update title and description** in the Publish dialog changes both on an open pull request.
+
+## AI suggestions
+
+**Suggest with AI**, in both dialogs, replaces the boxes' contents with a suggestion from Groq, for you to check and edit before using. Nothing is sent until the button is pressed.
+
+- **What is sent:** `describe.js`'s `forAi()` sends the change lines of published files. The Record and the blog sources (`docs/`) go only as a count ("2 changes (private file: content not shared)"). The e2e suite checks that Record text never reaches the request.
+- **The route:** `suggest.js` posts `{ access_token, kind: "commit" | "pr", changes }` to the Worker's `/describe`. The Worker checks the token with `GET /user` against the same allowlist as sign-in, so only Tom can spend the allowance. It accepts plain-text change lines only (at most 24 KB) and calls `https://api.groq.com/openai/v1/chat/completions` with the `GROQ_API_KEY` secret. The model is `GROQ_MODEL` (`openai/gpt-oss-120b`), with a strict JSON schema `{ title, body }`, low reasoning effort and no reasoning text returned.
+- **The prompt** tells the model:
+  - that the changes are data, not instructions;
+  - what the editor's change lines mean;
+  - to use British English, and to describe only what the changes show: no reasons guessed, nothing called an improvement, no mention of AI;
+  - to avoid the site's banned words.
+- **What comes back:** the title is cut to one line of at most 72 characters. A pull request description is cut where a list starts, because the editor adds the list itself.
+- **Failures** are shown under the boxes and leave the generated text in place:
+  - no key: 503;
+  - Groq's free limit (30 requests a minute, 1,000 a day for gpt-oss): 429, with `retry-after`;
+  - Groq unreachable: 504;
+  - an unusable answer: 502.
+- **Groq's data handling:** Groq doesn't keep inference data by default, but may log it for up to 30 days when investigating abuse or reliability. **Zero Data Retention**, in the Data Controls settings of the Groq console, turns that off (`setup.md`).
+
 ## Security review
 
 - **Who can sign in:** only the account whose numeric id and login are both on the Worker's allowlist; anyone else's grant is revoked on the spot. The App is installed only on the target repository, and its user tokens never exceed what Tom can already do there.
 - **The secret:** the client secret exists only in Tom's password manager, his user environment variable `GITHUB_HOMEPAGE_CLIENT_SECRET`, and Cloudflare's secret store. It is never committed, logged or sent to the browser. The App's private key is never used (no installation tokens, no JWTs) and is not in the repository (`*.pem` is ignored).
+- **The Groq key:** a Cloudflare secret (`GROQ_API_KEY`), also kept in Tom's user environment variable of that name and his Groq account. It never reaches the browser. `/describe` refuses anyone but the allowlisted account, so the key's allowance can't be spent by others, and private files' text is never sent (see "AI suggestions").
 - **Tokens in transit:** the handshake uses state and PKCE; tokens reach the editor only in the URL fragment, which is removed at once; every Worker response is `no-store` and `no-referrer`.
 - **Script on the editor's origin:** the page's CSP is `default-src 'none'; script-src 'self'` with no inline script; styles, fonts, images and media only from the editor and the two site origins; `connect-src` only `api.github.com` and the Worker; `form-action 'none'`, `object-src 'none'`, `base-uri` only the site origins. `frame-ancestors` cannot be set from a meta tag, so the editor refuses to run inside a frame. The preview frame has all scripts removed and its own `script-src 'none'`. Interface text is set with `textContent`; nothing is inserted as HTML.
 - **What an edit can do:** every change is a splice of the page's own source, re-parsed and verified; text is escaped; the checks mirror CI; locked parts and everything outside `main` must be byte-identical. CI in the site repository remains the gate before anything is published.
@@ -128,8 +177,8 @@ Found and fixed while checking: WebKit ignores script-made data on a constructed
 
 ## Tests
 
-- `npm run test:unit` (Node's test runner, `tests/unit/`): the Worker (every route, exact exchange bodies, cookies, CORS, strangers), `auth.js` (expiry, the lock, rotation, the 401 retry), the client (headers, error codes, the commit sequence, `gitBlobSha`), the page model (pinned block, link, image and draft counts for each of the 18 fixture pages, locks, the render copy), text edits (one-line diffs, `&amp;`, hugging tags, NBSP, emptied blocks, the re-serialising fallback, UTF-16 offsets, refusals, and a property test over every editable block of every fixture), drafts and attributes, structure (+ then × restores the file byte for byte), Markdown, the checks (the unmodified fixtures raise nothing; every rule fires), the publish flow against the fake GitHub, the vendored bundle (rebuilt and compared byte for byte) and the publish allowlist.
-- `npm run test:e2e` (Playwright): nineteen journeys against the fake GitHub through `page.route`, signing in for real from a Worker-style fragment.
+- `npm run test:unit` (Node's test runner, `tests/unit/`): the Worker (every route, exact exchange bodies, cookies, CORS, strangers, the exact Groq request and its failures), `auth.js` (expiry, the lock, rotation, the 401 retry), the client (headers, error codes, the commit sequence, `gitBlobSha`), the page model (pinned block, link, image and draft counts for each of the 18 fixture pages, locks, the render copy), text edits (one-line diffs, `&amp;`, hugging tags, NBSP, emptied blocks, the re-serialising fallback, UTF-16 offsets, refusals, and a property test over every editable block of every fixture), drafts and attributes, structure (+ then × restores the file byte for byte), Markdown, the checks (the unmodified fixtures raise nothing; every rule fires), the descriptions (each kind of change on the fixtures, subjects within 72 characters, the note and title rules, what the AI may see), the suggestion client, the publish flow against the fake GitHub, the vendored bundle (rebuilt and compared byte for byte) and the publish allowlist.
+- `npm run test:e2e` (Playwright): twenty journeys against the fake GitHub through `page.route`, signing in for real from a Worker-style fragment.
 - Fixtures: `tests/fixtures/site/` holds verbatim LF copies of the site's pages and Markdown at the commit named in `SOURCE.md`, and `FILES.txt` lists that commit's files.
 - `dev/fake-github.js` is an in-memory GitHub (git objects, fast-forward-only refs, three-dot compare, pull requests, check runs, workflow runs, the baseline bot) used by the unit tests, the Playwright suite and `?mock=1`.
 

@@ -18,6 +18,14 @@ Approved on 25 September 2026 after five clarifying questions. This copy is the 
   - A placeholder is recognised by its text, so adding an item above it doesn't skip the Done confirmation. Revert is withheld once items have been added or removed.
 
   Locally: 132 unit tests, and 19 journeys.
+- 26 September 2026, evening: #1 merged and the Worker deployed. With Tom signed in, live checks 1 to 4 passed: a one-word edit published through ThomasWCode/ThomasWCode.github.io-revised#34, with a regenerated baseline and one CI run.
+
+  Tom then asked for more descriptive commit messages and pull requests, with AI as an option. He chose generated, editable text plus AI suggestions from his Groq free tier:
+  - `describe.js` writes the messages from the changes;
+  - the Save and Publish dialogs make them editable;
+  - the Worker's `/describe` calls Groq behind the sign-in allowlist, and private files are sent only as counts.
+
+  This is new scope beyond the plan: `how-it-works.md`, "Commit messages and pull requests" and "AI suggestions". The prompts were checked against Groq's live API before the tests were written. Locally: 147 unit tests, and 20 journeys in all three engines.
 
 ### Where the build differs from this plan
 
