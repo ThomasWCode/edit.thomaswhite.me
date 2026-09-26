@@ -1,8 +1,9 @@
 /* Edit states inside the preview frame. The render copy links this file last
    in <head>, after the site's own stylesheets, and marks elements with
-   data-edit-role (block, locked, draft-note, draft-inline, draft-check, link,
-   image, gallery). The editor's buttons and labels are drawn by the parent
-   page over the frame, never inside it. */
+   data-edit-role (block, locked, draft-note, draft-inline, draft-check,
+   draft-new, draft-replace, draft-remove, link, image, gallery). The editor's
+   buttons and labels are drawn by the parent page over the frame, never
+   inside it. */
 
 [data-edit-role~="block"] {
   border-radius: 3px;
@@ -29,6 +30,26 @@
 [data-edit-role~="draft-check"] {
   outline: 2px dotted rgba(169, 78, 52, 0.6);
   outline-offset: 2px;
+}
+
+/* The editor's drafts (src/drafting.js), marked here whatever the site's own
+   stylesheet does: new content and new versions dashed, removals struck
+   through. A live element with a new version waiting after it is dimmed; on
+   the preview site itself (no data-editor) the new version stands in for it. */
+[data-draft="new"],
+[data-draft="replace"] {
+  outline: 2px dashed #a94e34;
+  outline-offset: 3px;
+  background-color: rgba(169, 78, 52, 0.08);
+}
+
+[data-draft="remove"] {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+:root[data-editor] :has(+ [data-draft="replace"]) {
+  opacity: 0.5;
 }
 
 [data-edit-role~="locked"]:hover {
