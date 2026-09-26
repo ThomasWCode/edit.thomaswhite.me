@@ -103,6 +103,20 @@ test("blocking: local references must be pages or repository files; anchors must
   assert.deepEqual(at("/sport/"), []);
 });
 
+test("srcset: only root paths are checked as repository files", () => {
+  const home = originals.get("index.html");
+  const withSrcset = (candidates) =>
+    buildPageModel(
+      home.source.replace("/Images/optimized/thomasw-480.webp 480w,\n                      /Images/optimized/thomasw-960.webp 960w", candidates),
+      { path: "index.html" },
+    );
+  const external = withSrcset("https://cdn.example.com/a.webp 480w, //cdn.example.com/b.webp 960w, data:image/webp;base64,UklGRg== 1x");
+  assert.notEqual(external.source, home.source);
+  assert.deepEqual(codes(check(external)).filter((code) => code === "missing-file"), []);
+  const missing = withSrcset("/Images/optimized/nope-480.webp 480w");
+  assert.deepEqual(codes(check(missing)).filter((code) => code === "missing-file"), ["missing-file"]);
+});
+
 test("blocking: an emptied heading; warning: an emptied paragraph", () => {
   const home = originals.get("index.html");
   const headingKey = blockKeyStarting(home, "What do you want to look at?");

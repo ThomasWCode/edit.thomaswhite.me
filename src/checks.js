@@ -177,16 +177,19 @@ function checkLink(model, node, context, lines, findings, tabRule) {
   }
 }
 
+// A path in this repository: one leading slash, not a protocol-relative "//".
+const isRootPath = (value) => value.startsWith("/") && !value.startsWith("//");
+
 function checkReferences(model, node, context, findings) {
   for (const name of REFERENCE_ATTRIBUTES) {
     const value = attribute(node, name);
-    if (value && value.startsWith("/") && !value.startsWith("//")) checkLocal(model, node, value, context, findings);
+    if (value && isRootPath(value)) checkLocal(model, node, value, context, findings);
   }
   const srcset = attribute(node, "srcset");
   if (srcset) {
     for (const candidate of srcset.split(",")) {
       const url = candidate.trim().split(/\s+/)[0];
-      if (url) checkLocal(model, node, url, context, findings);
+      if (url && isRootPath(url)) checkLocal(model, node, url, context, findings);
     }
   }
 }
