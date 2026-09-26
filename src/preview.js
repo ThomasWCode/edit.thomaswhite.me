@@ -99,6 +99,8 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
   function startEditing(block, { caretAtEnd = false } = {}) {
     if (editing === block) return;
     finishEditing();
+    // Words selected in another block are not this block's.
+    if (lastWords && lastWords.key !== block.getAttribute("data-edit-key")) lastWords = null;
     block.setAttribute("contenteditable", "true");
     block.spellcheck = true;
     editing = block;
@@ -135,10 +137,15 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
   function wire() {
     const options = { capture: true };
     // The last words selected in the block being edited, kept for the panel's
-    // draft buttons (clicking one moves focus out of the frame).
+    // draft buttons (clicking one moves focus out of the frame but leaves the
+    // frame's selection alone). A caret placed in the block drops them.
     doc.addEventListener("selectionchange", () => {
       const selection = doc.getSelection();
-      if (!editing || !selection || selection.isCollapsed || !editing.contains(selection.anchorNode) || !editing.contains(selection.focusNode)) return;
+      if (!editing || !selection || !editing.contains(selection.anchorNode) || !editing.contains(selection.focusNode)) return;
+      if (selection.isCollapsed) {
+        lastWords = null;
+        return;
+      }
       const walker = doc.createTreeWalker(editing, NodeFilter.SHOW_TEXT);
       const range = selection.getRangeAt(0);
       let offset = 0;

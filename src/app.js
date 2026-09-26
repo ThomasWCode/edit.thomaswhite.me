@@ -578,10 +578,12 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   }
 
   // The words last selected in the block being edited, as a draft phrase.
-  async function runDraftPhrase(kind) {
+  // `key` is the block whose panel offered it: words selected in another block
+  // (or before a click elsewhere) are not what is meant.
+  async function runDraftPhrase(kind, key) {
     const words = preview.lastSelection();
-    if (!words) {
-      toast("Select some words in a paragraph first, then choose this.", "warning");
+    if (!words || words.key !== key) {
+      toast("Select some words in this block first, then choose this.", "warning");
       return;
     }
     await applyOperation(
@@ -594,13 +596,17 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   async function runAddAfter(key) {
     const entry = current();
     const what = entry.model.nodeOf.get(key).tagName === "li" ? "list item" : "paragraph";
-    // In draft mode a new item starts as a draft: off the live site until published.
-    const inDraft = draftMode && !draftAround(entry.model, entry.model.nodeOf.get(key));
+    // In draft mode a new item starts as a draft: off the live site until
+    // published. It needs its own marker unless a draft is around the block:
+    // after a block that is itself a draft, it lands outside that draft.
+    const node = entry.model.nodeOf.get(key);
+    const around = draftAround(entry.model, node);
+    const asDraftItem = draftMode && (!around || around.node === node);
     const add = (model) => {
       const added = addAfter(model, key);
-      return inDraft ? { model: markDraft(added.model, added.key, "new"), key: added.key } : added;
+      return asDraftItem ? { model: markDraft(added.model, added.key, "new"), key: added.key } : added;
     };
-    await applyOperation(inDraft ? `Added a ${what} (as a draft)` : `Added a ${what}`, add, { selectAll: true, reshapes: true, drafting: "none" });
+    await applyOperation(asDraftItem ? `Added a ${what} (as a draft)` : `Added a ${what}`, add, { selectAll: true, reshapes: true, drafting: "none" });
   }
 
   async function runRemove(key) {
@@ -1614,8 +1620,8 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
         h(
           "div",
           { class: "button-row" },
-          button("Keep them off the live site", () => runDraftPhrase("new"), { small: true }),
-          button("Remove them when published", () => runDraftPhrase("remove"), { small: true }),
+          button("Keep them off the live site", () => runDraftPhrase("new", block.key), { small: true }),
+          button("Remove them when published", () => runDraftPhrase("remove", block.key), { small: true }),
         ),
       );
     }

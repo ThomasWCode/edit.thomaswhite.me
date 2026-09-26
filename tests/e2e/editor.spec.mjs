@@ -313,16 +313,29 @@ test("drafts: whole paragraphs and chosen words kept off the live site, and × m
   await page.locator("#panel").getByRole("button", { name: "Keep them off the live site" }).click();
   await expect(frame(page).locator('span[data-draft="new"]')).toHaveText("interesting");
 
+  // Words selected in one block never apply to the next block clicked.
+  await typeAtEnd(page, frame(page).locator("p", { hasText: "Anything big, small" }), "");
+  for (let index = 0; index < "need.".length; index += 1) await page.keyboard.press("Shift+ArrowLeft");
+  await frame(page).locator("p", { hasText: "Physics student, volunteer developer" }).click();
+  await page.locator("#panel").getByRole("button", { name: "Keep them off the live site" }).click();
+  await expect(page.locator("#toast")).toContainText("Select some words in this block first");
+  await expect(frame(page).locator('span[data-draft="new"]')).toHaveCount(1);
+
   await page.locator("#draft-mode-button").click();
   const item = frame(page).locator("li", { hasText: "Building VAXTB" });
   await item.locator(".compact-list-text").click();
   await page.locator(".edit-toolbar button", { hasText: "×" }).click();
   await expect(page.locator("#confirm-dialog")).toBeHidden();
   await expect(frame(page).locator('li[data-draft="remove"]')).toContainText("Building VAXTB");
+  // + after a block that is itself a draft lands outside it, so the new item is a draft of its own.
+  await frame(page).locator('li[data-draft="remove"] .compact-list-text').click();
+  await page.locator(".edit-toolbar button", { hasText: "+" }).click();
+  await expect(frame(page).locator('li[data-draft="new"]')).toContainText("New item");
   await save(page);
   const saved = fake.fileAt("edits", "index.html");
   expect(saved).toContain('<p>Pick whatever sounds a bit <span data-draft="new">interesting</span>.</p>');
   expect(saved).toMatch(/<li data-draft="remove">\s*<span class="compact-list-label">VAXTB<\/span>/);
+  expect(saved).toMatch(/<li data-draft="new">\s*<span class="compact-list-label">/);
 });
 
 test("a baseline bot commit does not block a save; another device's edit to the page does", async ({ page }) => {
