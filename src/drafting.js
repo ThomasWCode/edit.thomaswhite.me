@@ -15,6 +15,7 @@
 // Every function here returns a new model, re-parsed, or throws
 // EditRejectedError.
 
+import { decodeHTML } from "../vendor/parse5.js";
 import { EditRejectedError, removeAttributeSplice, setAttributeSplice } from "./edits.js";
 import {
   attribute,
@@ -272,14 +273,15 @@ export function discardDraft(model, key) {
 }
 
 // The raw source offset of the decoded character `index` in a text node's
-// raw source `raw` (entities count as one character each).
+// raw source `raw` (an entity counts as the UTF-16 units it decodes to).
 function rawOffset(raw, index) {
   let decoded = 0;
   let offset = 0;
   while (offset < raw.length && decoded < index) {
     const entity = raw[offset] === "&" ? /^&(?:#\d+|#x[\da-f]+|[a-z][a-z\d]*);/i.exec(raw.slice(offset)) : null;
     offset += entity ? entity[0].length : 1;
-    decoded += 1;
+    // In UTF-16 units, as the page's text counts: &#x1F600; is two.
+    decoded += entity ? decodeHTML(entity[0]).length : 1;
   }
   return offset;
 }

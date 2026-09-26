@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { asDraft, discardDraft, draftAround, draftPhrase, liveSource, makeDraft, markDraft, publishDraft, unitOf } from "../../src/drafting.js";
 import { commitTextEdit, EditRejectedError, setAttribute, setNowUpdated } from "../../src/edits.js";
-import { blockText, collapse, LOCK_REASONS, textOf } from "../../src/page-model.js";
+import { blockText, buildPageModel, collapse, LOCK_REASONS, textOf } from "../../src/page-model.js";
 import { blockKeyStarting, editBlock, loadModel, renderedSnapshot, typeInto } from "../support/fixtures.mjs";
 
 const draftsOf = (model, kind) => model.drafts.filter((draft) => draft.kind === kind);
@@ -69,6 +69,13 @@ test("links, the Now month and captions: the smallest whole element is the draft
   assert.equal(section.node.tagName, "section", "the Now month and its line go together");
   assert.ok(!/<section[^>]*data-draft="replace"[^>]*\sid=/.test(nowDraft.source), "the copy's ids are renamed");
   assert.equal(publishDraft(nowDraft, section.key).source, now.source, "and publishing names them back");
+  // With a new version waiting, the Now helper sets that version, not the live section.
+  assert.equal(nowDraft.now.key, section.key);
+  const again = setNowUpdated(nowDraft, "2026-11");
+  assert.equal(asDraft(nowDraft, again), again, "a change to the draft, not a second copy");
+  assert.equal(draftsOf(again, "replace").length, 1);
+  assert.equal(liveSource(again), liveSource(home), "the live section still waits");
+  assert.equal(publishDraft(again, section.key).source, setNowUpdated(home, "2026-11").source);
 
   const gallery = loadModel("gallery.html");
   const image = gallery.images.find((item) => item.gallery);
@@ -148,4 +155,12 @@ test("phrases: words in one run of text, wrapped; the whole text marks the block
     const marked = draftPhrase(contact, ampersand.key, at, at + 1, "remove");
     assert.equal(blockText(marked, ampersand.key), words, "an entity stays one character");
   }
+
+  // An entity that decodes to two UTF-16 units (an emoji) before the words.
+  const emoji = buildPageModel(home.source.replace("<p>Pick whatever", "<p>Pick &#x1F600; whatever"), { path: home.path });
+  const emojiKey = blockKeyStarting(emoji, "Pick");
+  const emojiText = blockText(emoji, emojiKey);
+  const at = emojiText.indexOf("whatever");
+  const wrapped = draftPhrase(emoji, emojiKey, at, at + "whatever".length, "new");
+  assert.ok(wrapped.source.includes('<p>Pick &#x1F600; <span data-draft="new">whatever</span> sounds'), "wraps exactly the words chosen");
 });

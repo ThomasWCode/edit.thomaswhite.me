@@ -325,8 +325,12 @@ function collectMarkers(model) {
         addRole(model, child, button ? "gallery" : "image");
       }
       if (hasAttribute(child, "data-updated") && !model.now) {
-        const line = findDescendant(child, (item) => classTokens(item).includes("now-updated"));
-        model.now = { key, updated: attribute(child, "data-updated"), lineKey: line ? model.keyOf.get(line) : null };
+        // A new version drafted straight after the live section is the one the
+        // Now helper sets: the live one waits, unchanged, until it is published.
+        const next = nextElementSibling(child);
+        const section = next && attribute(next, "data-draft") === "replace" && hasAttribute(next, "data-updated") ? next : child;
+        const line = findDescendant(section, (item) => classTokens(item).includes("now-updated"));
+        model.now = { key: model.keyOf.get(section), updated: attribute(section, "data-updated"), lineKey: line ? model.keyOf.get(line) : null };
       }
       visit(child);
     }
