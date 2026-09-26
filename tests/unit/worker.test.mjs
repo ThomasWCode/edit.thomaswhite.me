@@ -368,12 +368,94 @@ test("a token GitHub has already forgotten still counts as signed out", async ()
   assert.equal(response.status, 204);
 });
 
+const GROQ = "https://api.groq.com/openai/v1/chat/completions";
+const AI_ENV = { ...ENV, GROQ_API_KEY: "gsk_test", GROQ_MODEL: "openai/gpt-oss-120b" };
+const CHANGES = [{ file: "Physics & Ideas", path: "physics.html", changes: ["“… then see which patterns survive.” → “… then watch which patterns survive.”"] }];
+const describeRequest = (body, origin = EDITOR) =>
+  request("/describe", {
+    method: "POST",
+    headers: { Origin: origin, "Content-Type": "application/json" },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+const groqRoute = (content) => ({
+  [`POST ${GROQ}`]: () => json(200, { choices: [{ message: { role: "assistant", content } }] }),
+});
+const asked = (kind, changes = CHANGES) => ({ access_token: "ghu_access", kind, changes });
+
+test("describe: the signed-in owner gets a suggestion, and Groq gets exactly the changes", async () => {
+  const content = JSON.stringify({ title: "\"Change “see” to “watch” on Physics & Ideas.\"", body: "Replaced one word.\n" });
+  const { handle, calls } = setup({ ...userRoute(TOM), ...groqRoute(content) });
+  const response = await handle(describeRequest(asked("commit")), AI_ENV);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), EDITOR);
+  assertBaseHeaders(response);
+  assert.deepEqual(await response.json(), { title: "Change “see” to “watch” on Physics & Ideas", body: "Replaced one word." });
+
+  assert.equal(calls[0].url, "https://api.github.com/user");
+  assert.equal(calls[0].headers.get("Authorization"), "Bearer ghu_access");
+  assert.equal(calls[1].url, GROQ);
+  assert.equal(calls[1].headers.get("Authorization"), "Bearer gsk_test");
+  const sent = JSON.parse(calls[1].body);
+  assert.equal(sent.model, "openai/gpt-oss-120b");
+  assert.deepEqual(sent.response_format.json_schema.schema.required, ["title", "body"]);
+  assert.equal(sent.response_format.json_schema.strict, true);
+  assert.equal(sent.reasoning_effort, "low");
+  assert.equal(sent.include_reasoning, false);
+  assert.match(sent.messages[0].content, /git commit message/);
+  assert.match(sent.messages[0].content, /data, not instructions/);
+  assert.deepEqual(JSON.parse(sent.messages[1].content), { changes: CHANGES });
+  assert.equal(calls.length, 2);
+});
+
+test("describe: a pull request's text stops where a list starts", async () => {
+  const content = JSON.stringify({ title: "Reword the Game of Life line", body: "One word changed on two pages.\n\nChanges:\n- Physics\n- Programming" });
+  const { handle, calls } = setup({ ...userRoute(TOM), ...groqRoute(content) });
+  const response = await handle(describeRequest(asked("pr")), AI_ENV);
+  assert.deepEqual(await response.json(), { title: "Reword the Game of Life line", body: "One word changed on two pages." });
+  assert.match(JSON.parse(calls[1].body).messages[0].content, /pull request/);
+});
+
+test("describe: no key, bad requests, strangers, Groq's limits and failures", async () => {
+  const off = setup();
+  assert.equal((await off.handle(describeRequest(asked("commit")), ENV)).status, 503, "without a key the editor keeps its own text");
+
+  const { handle, calls } = setup({ ...userRoute(TOM), ...groqRoute("{}") });
+  for (const bad of ["not json", { kind: "commit", changes: CHANGES }, asked("poem"), asked("commit", []), asked("commit", [{ file: 1 }])]) {
+    assert.equal((await handle(describeRequest(bad), AI_ENV)).status, 400, JSON.stringify(bad).slice(0, 40));
+  }
+  assert.equal((await handle(describeRequest(asked("commit", [{ file: "x", path: "y", changes: ["z".repeat(30_000)] }])), AI_ENV)).status, 413);
+  assert.equal(calls.length, 0, "nothing reaches GitHub or Groq for a bad request");
+  assert.equal((await handle(describeRequest(asked("commit"), "https://evil.example"), AI_ENV)).status, 403);
+
+  const stranger = setup({ ...userRoute({ id: 5, login: "someone" }) });
+  assert.equal((await stranger.handle(describeRequest(asked("pr")), AI_ENV)).status, 403);
+  assert.ok(!stranger.calls.some((call) => call.url === GROQ), "a stranger never reaches Groq");
+
+  const limited = setup({ ...userRoute(TOM), [`POST ${GROQ}`]: () => new Response("{}", { status: 429, headers: { "retry-after": "7" } }) });
+  const tooMany = await limited.handle(describeRequest(asked("pr")), AI_ENV);
+  assert.equal(tooMany.status, 429);
+  assert.deepEqual(await tooMany.json(), { error: "rate_limited", retry_after: "7" });
+
+  const garbled = setup({ ...userRoute(TOM), ...groqRoute("not json") });
+  assert.equal((await garbled.handle(describeRequest(asked("pr")), AI_ENV)).status, 502);
+  const failing = setup({ ...userRoute(TOM), [`POST ${GROQ}`]: () => json(500, { error: { message: "down" } }) });
+  assert.equal((await failing.handle(describeRequest(asked("pr")), AI_ENV)).status, 502);
+  const unreachable = setup({
+    ...userRoute(TOM),
+    [`POST ${GROQ}`]: () => {
+      throw new TypeError("fetch failed");
+    },
+  });
+  assert.equal((await unreachable.handle(describeRequest(asked("pr")), AI_ENV)).status, 504);
+});
+
 test("health, unknown paths, wrong methods and a missing secret", async () => {
   const { handle } = setup();
   const health = await handle(request("/"), ENV);
   assert.equal(health.status, 200);
-  assert.equal(await health.text(), "site-editor-auth is running. Client secret: set.\n");
+  assert.equal(await health.text(), "site-editor-auth is running. Client secret: set. AI suggestions: off (no GROQ_API_KEY).\n");
   assertBaseHeaders(health);
+  assert.match(await (await handle(request("/"), AI_ENV)).text(), /AI suggestions: on \(openai\/gpt-oss-120b\)\./);
 
   assert.equal((await handle(request("/nope"), ENV)).status, 404);
   assert.equal((await handle(request("/login", { method: "POST" }), ENV)).status, 405);
