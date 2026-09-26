@@ -274,6 +274,10 @@ test("drafts: in draft mode a change to live text waits as a new version, and pu
   const copy = frame(page).locator('p[data-draft="replace"]');
   await expect(copy).toHaveText("Pick whatever sounds a bit interesting. Really.");
   await expect(frame(page).locator("p:not([data-draft])", { hasText: "Pick whatever" })).toHaveText("Pick whatever sounds a bit interesting.");
+  // The page's list names it a new version, to publish, not a placeholder to finish.
+  const listed = page.locator("#panel .draft-item", { hasText: "Really." });
+  await expect(listed.locator(".tag")).toHaveText("New version");
+  await expect(listed.getByRole("button", { name: "Publish" })).toBeVisible();
   await save(page);
   const saved = fake.fileAt("edits", "index.html");
   expect(saved).toContain(

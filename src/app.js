@@ -533,9 +533,14 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   // ---- The editor's drafts ----------------------------------------------------------
 
   const DRAFT_NAMES = {
-    new: { what: "a draft: not on thomaswhite.me until published", publish: "Publish draft", discard: "Discard draft" },
-    replace: { what: "a new version, waiting as a draft: the live one above stays until it's published", publish: "Publish new version", discard: "Discard new version" },
-    remove: { what: "marked to remove: it stays live until the removal is published", publish: "Remove now", discard: "Keep it" },
+    new: { tag: "Draft", what: "a draft: not on thomaswhite.me until published", publish: "Publish draft", discard: "Discard draft" },
+    replace: {
+      tag: "New version",
+      what: "a new version, waiting as a draft: the live one before it stays until this is published",
+      publish: "Publish new version",
+      discard: "Discard new version",
+    },
+    remove: { tag: "To remove", what: "marked to remove: it stays live until the removal is published", publish: "Remove now", discard: "Keep it" },
   };
 
   async function runPublishDraft(key) {
@@ -1616,7 +1621,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
         h(
           "div",
           { class: "panel-row" },
-          h("span", { class: `tag tag--draft-${draft.kind}` }, draft.kind === "remove" ? "To remove" : "Draft"),
+          h("span", { class: `tag tag--draft-${draft.kind}` }, names.tag),
           h("span", { class: "panel-row-text" }, `“${snippet(textOf(draft.node), 40)}”`),
           button(names.publish, () => runPublishDraft(draft.key), { small: true }),
           button(names.discard, () => runDiscardDraft(draft.key), { small: true, kind: "quiet" }),
@@ -1719,15 +1724,28 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
         h(
           "ul",
           { class: "draft-list" },
-          model.drafts.map((draft) =>
-            h(
+          model.drafts.map((draft) => {
+            const go = h("button", { type: "button", class: "draft-go", onClick: () => goTo(entry.path, draft.blockKey || draft.key) }, snippet(textOf(draft.node), 80) || "(empty)");
+            const names = DRAFT_NAMES[draft.kind];
+            // The editor's own drafts are published (or discarded, from the block's panel);
+            // the content-strategy placeholders are finished with Done or Approve.
+            if (names) {
+              return h(
+                "li",
+                { class: "draft-item" },
+                h("span", { class: `tag tag--draft-${draft.kind}` }, names.tag),
+                go,
+                model.readOnly ? null : button(draft.kind === "remove" ? "Remove now" : "Publish", () => runPublishDraft(draft.key), { small: true, title: names.publish }),
+              );
+            }
+            return h(
               "li",
               { class: "draft-item" },
               h("span", { class: `tag tag--${draft.kind}` }, draft.kind === "check" ? "Check" : "Write"),
-              h("button", { type: "button", class: "draft-go", onClick: () => goTo(entry.path, draft.blockKey || draft.key) }, snippet(textOf(draft.node), 80) || "(empty)"),
+              go,
               model.readOnly ? null : button(draft.kind === "check" ? "Approve" : "Done", () => runDraft(draft.key), { small: true }),
-            ),
-          ),
+            );
+          }),
         ),
       );
     } else if (!model.readOnly) {
