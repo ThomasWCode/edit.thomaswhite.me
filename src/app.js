@@ -5,8 +5,9 @@
 
 import { AuthNetworkError, SignedOutError } from "./auth.js";
 import { changedLines, checkPage, checkSite, curlQuotes, isExternalRedirect, siteContext } from "./checks.js";
+import { bodyText, commitMessageFor, describeFile, forAi, noteOf, summarise } from "./describe.js";
 import { confirmAction, openDialog, promptText } from "./dialogs.js";
-import { commitMessage, countLineChanges, lineHunks, trimEqualRuns, wordDiff } from "./diff-view.js";
+import { countLineChanges, lineHunks, trimEqualRuns, wordDiff } from "./diff-view.js";
 import { $, button, externalLink, h } from "./dom.js";
 import {
   commitTextEdit,
@@ -69,7 +70,9 @@ export function describeError(error, target) {
   return error && error.message ? error.message : String(error);
 }
 
-export function createApp({ target, client, user, onSignedOut }) {
+// `suggest(kind, changes)` asks for an AI suggestion (src/suggest.js); null
+// hides the "Suggest with AI" buttons.
+export function createApp({ target, client, user, onSignedOut, suggest = null }) {
   const store = createWorkingStore({ storage: sessionStorage, target });
   const entries = new Map();
   let currentPath = null;
@@ -79,6 +82,12 @@ export function createApp({ target, client, user, onSignedOut }) {
   let prefetching = null;
   let pollTimer = null;
   let publishDialogOpen = false;
+  // The pull request's title and description fields: built once per opening
+  // of the Publish dialog, then re-attached on every render so typing in them
+  // survives the checks' polling.
+  let publishFields = null;
+  let describingBranch = false;
+  let publishOpenings = 0;
 
   const flow = createPublishFlow({
     client,
@@ -675,16 +684,91 @@ export function createApp({ target, client, user, onSignedOut }) {
     }
     const blocking = [...results.flatMap((result) => result.findings), ...siteFindings].filter((finding) => finding.level === "block");
     renderTopbar();
+    const described = describeEntries(dirty);
+    const message = messageFields({
+      kind: "commit",
+      title: summarise(described),
+      body: bodyText(described),
+      changes: forAi(described),
+      titleLabel: "Commit message",
+      bodyLabel: "Details",
+    });
     const choice = await openDialog($("save-dialog"), {
       title: "Save to GitHub",
-      body: (close) => saveDialogBody(results, siteFindings, close),
+      body: (close) => saveDialogBody(results, siteFindings, close, message.element),
       actions: [
         { label: "Cancel", value: null },
         { label: `Save ${dirty.length} ${dirty.length === 1 ? "file" : "files"}`, value: "save", kind: "primary", disabled: blocking.length > 0 },
       ],
     });
-    if (choice === "save") await doSave(dirty);
+    if (choice === "save") await doSave(dirty, message.read());
     else if (choice && typeof choice === "object") await choice.run();
+  }
+
+  // What changed in each file since it was loaded, for commit messages.
+  function describeEntries(list) {
+    return list.map((entry) =>
+      describeFile({
+        path: entry.path,
+        label: entry.kind === "page" ? entry.label : null,
+        before: entry.isNew ? null : entry.original || "",
+        after: entry.kind === "markdown" ? normaliseMarkdown(entry.working) : entry.working,
+        beforeModel: entry.kind === "page" ? entry.originalModel : null,
+        afterModel: entry.kind === "page" ? entry.model : null,
+      }),
+    );
+  }
+
+  const commitText = ({ title, body }) => (body ? `${title}\n\n${body}\n` : `${title}\n`);
+
+  // Editable words for a commit or a pull request: a one-line title and a
+  // longer text, prefilled with what the editor generated. "Suggest with AI"
+  // asks the Worker (Groq) and puts its answer in the fields, to check and edit
+  // before use. `changes` is describe.js's forAi(): no private file content.
+  function messageFields({ kind, title, body, changes, titleLabel, bodyLabel, bodyHint = null }) {
+    const titleInput = h("input", { type: "text", class: "text-input message-title", maxlength: "120", spellcheck: "true" });
+    titleInput.value = title;
+    const bodyInput = h("textarea", { class: "text-input message-body", rows: kind === "commit" ? "5" : "3", spellcheck: "true", placeholder: bodyHint });
+    bodyInput.value = body;
+    const status = h("p", { class: "small message-status", role: "status" });
+    const parts = [
+      h("div", { class: "field" }, h("label", { class: "field-label" }, titleLabel, titleInput)),
+      h("div", { class: "field" }, h("label", { class: "field-label" }, bodyLabel, bodyInput)),
+    ];
+    if (suggest && changes.length) {
+      const ask = button(
+        "Suggest with AI",
+        async () => {
+          ask.disabled = true;
+          status.textContent = "Asking Groq…";
+          try {
+            const result = await suggest(kind, changes);
+            titleInput.value = result.title;
+            bodyInput.value = result.body;
+            status.textContent = "Suggested by AI (Groq, through the editor's Worker). Check it before you use it.";
+          } catch (error) {
+            if (error instanceof SignedOutError) onSignedOut(error.message);
+            status.textContent = error.message || "The suggestion failed.";
+          } finally {
+            ask.disabled = false;
+          }
+        },
+        { small: true },
+      );
+      parts.push(
+        h(
+          "div",
+          { class: "button-row message-actions" },
+          ask,
+          h("span", { class: "small" }, "Sends the page changes to Groq; the Record and blog sources only as a count."),
+        ),
+      );
+    }
+    parts.push(status);
+    return {
+      element: h("section", { class: "message-fields" }, parts),
+      read: () => ({ title: titleInput.value.trim() || title, body: bodyInput.value.trim() }),
+    };
   }
 
   function findingItem(finding, entry, close) {
@@ -759,7 +843,7 @@ export function createApp({ target, client, user, onSignedOut }) {
     return visit(node);
   }
 
-  function saveDialogBody(results, siteFindings, close) {
+  function saveDialogBody(results, siteFindings, close, messageElement) {
     const sections = [];
     const siteBlocking = siteFindings.filter((finding) => finding.level === "block");
     if (siteFindings.length) {
@@ -789,7 +873,7 @@ export function createApp({ target, client, user, onSignedOut }) {
     if (siteBlocking.length || results.some((result) => result.findings.some((finding) => finding.level === "block"))) {
       notes.unshift("Fix the items marked “Must fix” first: the site's own checks would fail on them.");
     }
-    return h("div", { class: "save-body" }, notes.map((note) => h("p", { class: "notice" }, note)), sections);
+    return h("div", { class: "save-body" }, notes.map((note) => h("p", { class: "notice" }, note)), messageElement, sections);
   }
 
   function changeItem(item) {
@@ -820,7 +904,9 @@ export function createApp({ target, client, user, onSignedOut }) {
     );
   }
 
-  async function doSave(dirty) {
+  // `message` is { title, body } from the Save dialog; without one (saving the
+  // other files after a conflict) the generated message is used.
+  async function doSave(dirty, message = null) {
     const changes = dirty.map((entry) => ({
       entry,
       path: entry.path,
@@ -830,7 +916,7 @@ export function createApp({ target, client, user, onSignedOut }) {
     try {
       const { files } = await flow.save(
         changes.map(({ path, text, loadedSha }) => ({ path, text, loadedSha })),
-        commitMessage(changes.map((change) => change.path)),
+        message ? commitText(message) : commitMessageFor(describeEntries(dirty)),
       );
       for (const { entry, text } of changes) {
         entry.loadedSha = files.get(entry.path);
@@ -890,7 +976,10 @@ export function createApp({ target, client, user, onSignedOut }) {
       return;
     }
     publishDialogOpen = true;
+    publishFields = null;
+    describingBranch = flow.state.onBranch && flow.state.phase !== "published";
     renderPublishDialog();
+    if (describingBranch) prepareDescription();
     const dialog = $("publish-dialog");
     dialog.oncancel = () => {
       publishDialogOpen = false;
@@ -901,6 +990,38 @@ export function createApp({ target, client, user, onSignedOut }) {
     if (!dialog.open) dialog.showModal();
     if (flow.state.pr && !flow.state.busy) runFlow(() => flow.refreshChecks());
   }
+
+  // The title and description fields, from the branch's changes: the generated
+  // title (or the open pull request's title and your note in it). Publish
+  // still works without them, with the generated title.
+  async function prepareDescription() {
+    const opening = (publishOpenings += 1);
+    let fields = null;
+    try {
+      const described = await flow.describeBranch();
+      const pr = flow.state.pr;
+      fields = messageFields({
+        kind: "pr",
+        title: pr && pr.title ? pr.title : described.title,
+        body: pr ? noteOf(pr.body) : "",
+        changes: forAi(described.files),
+        titleLabel: "Pull request title",
+        bodyLabel: "Description",
+        bodyHint: "Optional: a note above the list of changes, which the editor adds and keeps up to date on each save.",
+      });
+    } catch {
+      fields = null;
+    }
+    if (opening !== publishOpenings) return;
+    publishFields = fields;
+    describingBranch = false;
+    if (publishDialogOpen) renderPublishDialog();
+  }
+
+  const publishWords = () => {
+    const words = publishFields ? publishFields.read() : null;
+    return words ? { title: words.title, note: words.body } : {};
+  };
 
   // Bringing main in changes files on edits: it needs everything saved, and
   // reloads the files from the merged branch once GitHub has made the merge.
@@ -1003,7 +1124,10 @@ export function createApp({ target, client, user, onSignedOut }) {
     const busy = state.busy;
     const actions = [button("Close", () => dialog.close(), { kind: "quiet" })];
     if (!pr && state.phase !== "published") {
-      actions.push(button("Publish", () => runFlow(() => flow.publish()), { kind: "primary", disabled: busy || state.aheadBy === 0 }));
+      actions.push(button("Publish", () => runFlow(() => flow.publish(publishWords())), { kind: "primary", disabled: busy || state.aheadBy === 0 }));
+    }
+    if (pr && publishFields) {
+      actions.push(button("Update title and description", () => runFlow(() => flow.updatePullRequest(publishWords())), { disabled: busy }));
     }
     if (pr) actions.push(button("Refresh", () => runFlow(() => flow.refreshChecks()), { disabled: busy }));
     if (pr && state.behindBy > 0) actions.push(button("Update from main", updateFromMain, { disabled: busy }));
@@ -1014,6 +1138,20 @@ export function createApp({ target, client, user, onSignedOut }) {
     const summary = state.changedPaths.length
       ? h("p", {}, `${state.changedPaths.length} ${state.changedPaths.length === 1 ? "file differs" : "files differ"} from main: `, state.changedPaths.map((path, index) => [index ? ", " : "", h("code", {}, path)]))
       : h("p", {}, state.phase === "published" ? "" : "The edits branch matches main: nothing to publish.");
+    const words =
+      state.phase === "published"
+        ? null
+        : publishFields
+          ? publishFields.element
+          : describingBranch
+            ? h("p", { class: "small" }, "Describing the changes…")
+            : null;
+    // Re-rendering detaches the fields: keep the caret where it was.
+    const active = document.activeElement;
+    const typing =
+      publishFields && active && publishFields.element.contains(active) && "selectionStart" in active
+        ? { element: active, start: active.selectionStart, end: active.selectionEnd }
+        : null;
     dialog.setAttribute("aria-labelledby", "publish-dialog-title");
     dialog.replaceChildren(
       h(
@@ -1031,12 +1169,17 @@ export function createApp({ target, client, user, onSignedOut }) {
           summary,
           state.notice ? h("p", { class: `notice${state.phase === "attention" ? " notice--warning" : ""}`, role: "status" }, state.notice) : null,
           state.error ? h("p", { class: "notice notice--error", role: "alert" }, describeError(state.error, target)) : null,
+          words,
           h("ol", { class: "steps" }, steps),
           h("p", { class: "small" }, "Each publish runs the site's checks on the pull request and again on main after the merge: about 40 minutes of Windows Actions time, plus about 4 when screenshots are refreshed."),
         ),
         h("footer", { class: "dialog-actions" }, actions),
       ),
     );
+    if (typing && typing.element.isConnected) {
+      typing.element.focus();
+      typing.element.setSelectionRange(typing.start, typing.end);
+    }
   }
 
   // ---- Reload ------------------------------------------------------------------------

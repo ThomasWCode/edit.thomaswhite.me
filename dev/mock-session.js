@@ -92,5 +92,16 @@ export async function createMockSession({ target }) {
     document.body.append(panel);
   }
 
-  return { auth, fetch: (input, init) => fake.fetch(input, init), fake, mountPanel };
+  // A stand-in for the Worker's AI suggestions: no network, no Groq.
+  async function suggest(kind, changes) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const pages = changes.map((change) => change.file);
+    const lines = changes.flatMap((change) => change.changes.map((line) => `${change.file}: ${line}`));
+    return {
+      title: `(mock suggestion) Edit ${pages.join(" and ")}`.slice(0, 72),
+      body: kind === "pr" ? `A mock summary of ${lines.length} change(s) on ${pages.join(" and ")}.` : lines.slice(0, 4).join("\n"),
+    };
+  }
+
+  return { auth, fetch: (input, init) => fake.fetch(input, init), fake, mountPanel, suggest };
 }

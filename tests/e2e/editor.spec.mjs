@@ -50,7 +50,9 @@ test("typing in a paragraph and saving commits exactly that line", async ({ page
     readFixture("index.html").replace("<p>Pick whatever sounds a bit interesting.</p>", "<p>Pick whatever sounds a bit interesting. Really.</p>"),
   );
   const commit = fake.requests.find((request) => request.method === "POST" && request.path === "/git/commits");
-  expect(commit.body.message).toBe("Edit 1 file in the editor\n\n- index.html\n");
+  expect(commit.body.message).toBe(
+    "Home: add “Really.”\n\nHome (index.html)\n- “Pick whatever sounds a bit interesting.” → “Pick whatever sounds a bit interesting. Really.”\n",
+  );
   const ref = fake.requests.find((request) => request.method === "PATCH" && request.path === "/git/refs/heads/edits");
   expect(ref.body.force).toBe(false);
   expect(fake.checkRuns()).toHaveLength(0);
@@ -192,8 +194,9 @@ test("Publish opens the pull request, waits for green checks, then merges and de
 
   await page.locator("#publish-button").click();
   const dialog = page.locator("#publish-dialog");
+  await expect(dialog.getByLabel("Pull request title")).toHaveValue("Physics & Ideas: add “(and stuff)”");
   await dialog.getByRole("button", { name: "Publish", exact: true }).click();
-  await expect(dialog.getByRole("link", { name: /#1 Text edits from the editor/ })).toBeVisible();
+  await expect(dialog.getByRole("link", { name: "#1 Physics & Ideas: add “(and stuff)”" })).toBeVisible();
   const merge = dialog.getByRole("button", { name: "Merge", exact: true });
   expect(fake.pulls()).toHaveLength(1);
   expect(fake.requests.filter((request) => request.path.includes("dispatches"))).toHaveLength(0);
@@ -205,6 +208,56 @@ test("Publish opens the pull request, waits for green checks, then merges and de
   expect(fake.head("edits")).toBeNull();
   expect(fake.fileAt("main", "physics.html")).toContain("Thinking about things (and stuff)");
   expect(fake.commit(fake.head("main")).parents).toHaveLength(2);
+});
+
+test("commit messages and pull requests: generated, editable, or suggested by AI without private text", async ({ page }) => {
+  const fake = await createFake();
+  const worker = await openEditor(page, fake);
+  const paragraph = frame(page).locator("p", { hasText: "Pick whatever sounds a bit interesting." });
+  await typeAtEnd(page, paragraph, " Really.");
+  await page.keyboard.press("Enter");
+  await page.locator("#record-list .file-link").click();
+  const record = page.locator("#markdown-editor");
+  await record.press("Control+End");
+  await record.type("- A private fact.\n");
+  await page.waitForTimeout(600);
+
+  await page.locator("#save-button").click();
+  const saveDialog = page.locator("#save-dialog");
+  const subject = saveDialog.getByLabel("Commit message");
+  await expect(subject).toHaveValue("Home and the Record: 1 wording change, 1 line added");
+  await saveDialog.getByRole("button", { name: "Suggest with AI" }).click();
+  await expect(subject).toHaveValue("Add “Really.” to the homepage");
+  await expect(saveDialog.getByLabel("Details")).toHaveValue("Home gains one word.");
+  await subject.fill("Home: add “Really.”; a fact for the Record");
+  await saveDialog.locator(".dialog-actions .button--primary").click();
+  await expect(saveDialog).toBeHidden();
+  await expect(page.locator("#save-button")).toHaveText("Save");
+  const commit = fake.requests.find((request) => request.method === "POST" && request.path === "/git/commits");
+  expect(commit.body.message).toBe("Home: add “Really.”; a fact for the Record\n\nHome gains one word.\n");
+
+  // What went to the AI: the page's change, and the Record only as a count.
+  const [asked] = worker.describes;
+  expect(asked).toMatchObject({ access_token: expect.stringMatching(/^ghu_test/), kind: "commit" });
+  expect(asked.changes).toEqual([
+    { file: "Home", path: "index.html", changes: ["“Pick whatever sounds a bit interesting.” → “Pick whatever sounds a bit interesting. Really.”"] },
+    { file: "Record", path: "docs/record.md", changes: ["1 change (private file: content not shared)"] },
+  ]);
+  expect(JSON.stringify(worker.describes)).not.toContain("private fact");
+
+  await page.locator("#publish-button").click();
+  const publish = page.locator("#publish-dialog");
+  const prTitle = publish.getByLabel("Pull request title");
+  await expect(prTitle).toHaveValue("Home and the Record: 1 wording change, 1 line added");
+  await publish.getByRole("button", { name: "Suggest with AI" }).click();
+  await expect(prTitle).toHaveValue("Publish a word on Home and a Record fact");
+  await publish.getByRole("button", { name: "Publish", exact: true }).click();
+  await expect(publish.getByRole("link", { name: "#1 Publish a word on Home and a Record fact" })).toBeVisible();
+  const [pull] = fake.pulls();
+  expect(pull.body.startsWith("One word on Home and a fact in the Record.\n\n<!-- editor:changes -->")).toBe(true);
+  expect(pull.body).toContain("**Home** (`index.html`)");
+  expect(worker.describes[1].kind).toBe("pr");
+  expect(JSON.stringify(worker.describes)).not.toContain("private fact");
 });
 
 test("a baseline bot commit does not block a save; another device's edit to the page does", async ({ page }) => {

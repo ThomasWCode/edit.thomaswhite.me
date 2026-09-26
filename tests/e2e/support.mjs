@@ -40,9 +40,15 @@ const cors = (origin) => ({
   vary: "Origin",
 });
 
+// The Worker's AI suggestions, as the stand-in answers them.
+export const SUGGESTIONS = {
+  commit: { title: "Add “Really.” to the homepage", body: "Home gains one word." },
+  pr: { title: "Publish a word on Home and a Record fact", body: "One word on Home and a fact in the Record." },
+};
+
 // Routes GitHub and the Worker for one page. Returns the Worker's call log.
 export async function connect(page, fake) {
-  const worker = { refreshes: [], logouts: [], nextToken: 2 };
+  const worker = { refreshes: [], logouts: [], describes: [], nextToken: 2 };
   await page.route("https://api.github.com/**", async (route) => {
     const request = route.request();
     const origin = request.headers().origin;
@@ -80,6 +86,14 @@ export async function connect(page, fake) {
     if (path === "/logout") {
       worker.logouts.push(body);
       return route.fulfill({ status: 204, headers: cors(origin) });
+    }
+    if (path === "/describe") {
+      worker.describes.push(body);
+      return route.fulfill({
+        status: 200,
+        headers: { "content-type": "application/json", ...cors(origin) },
+        body: JSON.stringify(SUGGESTIONS[body.kind]),
+      });
     }
     return route.fulfill({ status: 404, headers: cors(origin), body: "Not found" });
   });
