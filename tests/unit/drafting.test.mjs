@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { asDraft, discardDraft, draftAround, draftPhrase, liveSource, makeDraft, markDraft, publishDraft, unitOf } from "../../src/drafting.js";
+import {
+  asDraft,
+  discardDraft,
+  draftAround,
+  draftPhrase,
+  hasWaitingVersion,
+  liveSource,
+  makeDraft,
+  markDraft,
+  publishDraft,
+  refuseWaitingChange,
+  unitOf,
+} from "../../src/drafting.js";
 import { commitTextEdit, EditRejectedError, setAttribute, setNowUpdated } from "../../src/edits.js";
 import { blockText, buildPageModel, collapse, LOCK_REASONS, textOf } from "../../src/page-model.js";
 import { blockKeyStarting, editBlock, loadModel, renderedSnapshot, typeInto } from "../support/fixtures.mjs";
@@ -99,6 +111,61 @@ test("links, the Now month and captions: the smallest whole element is the draft
     assert.equal(publishDraft(drafted, own.key).source, edited.source, `${path}: publishing is the direct edit`);
     assert.equal(discardDraft(drafted, own.key).source, model.source, `${path}: discarding restores it`);
   }
+});
+
+test("a live element with a new version waiting stays as it is, drafts on or off", () => {
+  const home = loadModel("index.html");
+  const reading = home.links.find((link) => link.href === "/physics/#reading");
+  const drafted = asDraft(home, setAttribute(home, reading.key, "href", "/physics/#questions"));
+  const live = drafted.links.find((link) => link.href === "/physics/#reading");
+  const copy = drafted.links.find((link) => link.href === "/physics/#questions");
+  assert.ok(hasWaitingVersion(drafted, live.node) && !hasWaitingVersion(drafted, copy.node), "the live link waits; its copy is the one to change");
+  const again = setAttribute(drafted, live.key, "href", "/physics/#ideas");
+  assert.throws(() => asDraft(drafted, again), /waiting as a draft/, "no second version");
+  assert.throws(() => refuseWaitingChange(drafted, again), /waiting as a draft/, "nor a direct change under the draft");
+  const copyChanged = setAttribute(drafted, copy.key, "href", "/physics/#ideas");
+  assert.doesNotThrow(() => refuseWaitingChange(drafted, copyChanged));
+  assert.equal(asDraft(drafted, copyChanged), copyChanged, "changing the copy changes the draft");
+});
+
+test("content marked to remove is still live: a change to it can't wait as a draft", () => {
+  const home = loadModel("index.html");
+  const key = blockKeyStarting(home, "Pick whatever");
+  const going = markDraft(home, key, "remove");
+  const edited = editBlock(going, "Pick whatever", "interesting", "fascinating");
+  assert.throws(() => asDraft(going, edited), /marked to remove/);
+
+  const physics = loadModel("physics.html");
+  const label = blockKeyStarting(physics, "Dennis E. Taylor");
+  const list = physics.nodeOf.get(unitOf(physics, label)).parentNode;
+  const listGoing = markDraft(physics, physics.keyOf.get(list), "remove");
+  const inside = asDraft(listGoing, editBlock(listGoing, "Dennis E. Taylor", "Dennis", "Denis"));
+  assert.equal(draftsOf(inside, "replace").length, 1, "an item inside a removal gets a new version of its own");
+  assert.equal(liveSource(inside), liveSource(listGoing), "and nothing live changes");
+});
+
+test("a draft is never wrapped in another: publish or discard the inner one first", () => {
+  const home = loadModel("index.html");
+  const key = blockKeyStarting(home, "Pick whatever");
+  const text = blockText(home, key);
+  const at = text.indexOf("a bit");
+  const phrase = draftPhrase(home, key, at, at + "a bit".length, "new");
+  assert.throws(() => makeDraft(phrase, key), /holds a draft already/);
+  assert.throws(() => markDraft(phrase, key, "remove"), /holds a draft already/);
+});
+
+test("leaving out a phrase before punctuation takes the space before it, as the site's build does", () => {
+  const home = loadModel("index.html");
+  const key = blockKeyStarting(home, "Pick whatever");
+  const text = blockText(home, key);
+  const at = text.indexOf("interesting");
+  const last = draftPhrase(home, key, at, at + "interesting".length, "new");
+  assert.ok(last.source.includes('<p>Pick whatever sounds a bit <span data-draft="new">interesting</span>.</p>'));
+  assert.ok(liveSource(last).includes("<p>Pick whatever sounds a bit.</p>"), "no “a bit .”");
+  assert.ok(discardDraft(last, draftsOf(last, "new")[0].key).source.includes("<p>Pick whatever sounds a bit.</p>"));
+  const going = draftPhrase(home, key, at, at + "interesting".length, "remove");
+  assert.ok(publishDraft(going, draftsOf(going, "remove")[0].key).source.includes("<p>Pick whatever sounds a bit.</p>"));
+  assert.equal(liveSource(going), liveSource(home), "a phrase to remove stays live until published");
 });
 
 test("marking whole elements: new keeps them off the site, remove keeps them on until published", () => {
