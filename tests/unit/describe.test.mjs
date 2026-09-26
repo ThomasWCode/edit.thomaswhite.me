@@ -16,9 +16,9 @@ import {
   summarise,
   wordChange,
 } from "../../src/describe.js";
-import { asDraft, discardDraft, makeDraft, publishDraft } from "../../src/drafting.js";
+import { asDraft, discardDraft, draftPhrase, makeDraft, publishDraft } from "../../src/drafting.js";
 import { completeDraft, setAttribute, setNowUpdated } from "../../src/edits.js";
-import { collapse, textOf } from "../../src/page-model.js";
+import { blockText, collapse, textOf } from "../../src/page-model.js";
 import { addAfter, removeBlock } from "../../src/structure.js";
 import { blockKeyStarting, editBlock, loadModel, readFixture } from "../support/fixtures.mjs";
 
@@ -175,6 +175,22 @@ test("drafts: saved, published, discarded and taken off the live site are told a
   const published = described(drafted, publishDraft(drafted, copy));
   assert.equal(summarise([published]), "Home: “interesting.” → “fascinating.”", "publishing is the live change itself");
   assert.deepEqual(described(drafted, discardDraft(drafted, copy)).items.map((item) => item.kind), ["draft-discarded"]);
+
+  // A new version that changed only a link's address has the live link's words:
+  // whole elements, not words, tell publishing from discarding.
+  const reading = home.links.find((link) => link.href === "/physics/#reading");
+  const linkDraft = asDraft(home, setAttribute(home, reading.key, "href", "/physics/#questions"));
+  const linkCopy = linkDraft.drafts.find((draft) => draft.kind === "replace").key;
+  assert.deepEqual(described(linkDraft, discardDraft(linkDraft, linkCopy)).items.map((item) => item.kind), ["draft-discarded"]);
+  assert.ok(!described(linkDraft, publishDraft(linkDraft, linkCopy)).items.some((item) => item.kind === "draft-discarded"));
+
+  // A new phrase whose words appear all over the page: discarded, then published.
+  const pick = blockKeyStarting(home, "Pick whatever");
+  const at = blockText(home, pick).indexOf(" a bit") + 1;
+  const phrase = draftPhrase(home, pick, at, at + 1, "new");
+  const phraseKey = phrase.drafts.find((draft) => draft.kind === "new").key;
+  assert.deepEqual(described(phrase, discardDraft(phrase, phraseKey)).items.map((item) => item.kind), ["draft-discarded"]);
+  assert.ok(!described(phrase, publishDraft(phrase, phraseKey)).items.some((item) => item.kind === "draft-discarded"));
 
   const off = described(home, makeDraft(home, blockKeyStarting(home, "Pick whatever")));
   assert.deepEqual(off.items.map((item) => item.kind), ["unpublished"]);

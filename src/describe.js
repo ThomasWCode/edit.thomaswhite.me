@@ -6,7 +6,7 @@
 import { lineHunks, trimEqualRuns, wordDiff } from "./diff-view.js";
 import { liveSource } from "./drafting.js";
 import { updatedLabel } from "./edits.js";
-import { attribute, blockText, buildPageModel, collapse, EDITOR_DRAFT_KINDS, pageTitle, previousElementSibling, textOf } from "./page-model.js";
+import { attribute, blockText, buildPageModel, collapse, EDITOR_DRAFT_KINDS, elementChildren, pageTitle, previousElementSibling, textOf } from "./page-model.js";
 import { diffSequences } from "./sequence-diff.js";
 import { fallbackLabel, labelFromTitle } from "./site-files.js";
 
@@ -79,7 +79,7 @@ export function describeFile({ path, before, after, label = null, beforeModel = 
   const plain = (text) => collapse((text || "").replace(/ — /g, " "));
   const done = finished.map((item) => plain(item.text)).filter(Boolean);
   const partOfDone = (item) => item.kind === "added" && done.some((text) => text.includes(plain(item.text)));
-  let items = [...live.filter((item) => !partOfDone(item)), ...finished, ...editorDraftItems(a, b, liveB)];
+  let items = [...live.filter((item) => !partOfDone(item)), ...finished, ...editorDraftItems(a, b, liveA, liveB)];
   // Live content made a draft: gone from the live page, kept as a new draft.
   for (const saved of items.filter((item) => item.kind === "draft-added" && item.draft === "new")) {
     const gone = items.find((item) => item.kind === "removed" && plain(item.text) === plain(saved.text));
@@ -98,19 +98,62 @@ function editorDrafts(model) {
   };
   return model.drafts
     .filter((draft) => EDITOR_DRAFT_KINDS.has(draft.kind) && !inDraft(draft.node.parentNode))
-    .map((draft) => ({
-      kind: draft.kind,
-      tag: draft.node.tagName,
-      text: collapse(textOf(draft.node)),
-      live: draft.kind === "replace" ? collapse(textOf(previousElementSibling(draft.node) || draft.node)) : null,
-    }));
+    .map((draft) => {
+      const previous = draft.kind === "replace" ? previousElementSibling(draft.node) || draft.node : null;
+      return {
+        kind: draft.kind,
+        tag: draft.node.tagName,
+        text: collapse(textOf(draft.node)),
+        live: previous ? collapse(textOf(previous)) : null,
+        // What publishing it changes on the live site: a new version takes the
+        // live element away, a removal takes itself away, new content arrives.
+        sign: publishSign(previous || draft.node),
+      };
+    });
 }
 
-// Drafts saved, edited or discarded. A draft that went (and whose content is
-// now live, or gone for a removal) was published: the live changes say so.
-function editorDraftItems(a, b, liveB) {
+// An element as the live site shows it (tag, attributes without a draft's
+// marker and with renamed ids named back, and words), or, for a phrase's bare
+// span, which the live site unwraps, just its words.
+function publishSign(node) {
+  const attrs = (node.attrs || []).filter((attr) => attr.name !== "data-draft");
+  if (node.tagName === "span" && !attrs.length) return { words: collapse(textOf(node)) };
+  const named = attrs.map((attr) => `${attr.name === "data-draft-id" ? "id" : attr.name}="${attr.value}"`).sort();
+  return { element: `<${node.tagName} ${named.join(" ")}>${collapse(textOf(node))}` };
+}
+
+const signCounts = new WeakMap();
+// How often a sign appears in a page's live view.
+function occurrences(model, sign) {
+  const root = model.main || model.document;
+  if (sign.words !== undefined) return sign.words ? collapse(textOf(root)).split(sign.words).length - 1 : 0;
+  if (!signCounts.has(model)) {
+    const counts = new Map();
+    const visit = (node) => {
+      for (const child of elementChildren(node)) {
+        const { element } = publishSign(child);
+        if (element) counts.set(element, (counts.get(element) || 0) + 1);
+        visit(child);
+      }
+    };
+    visit(root);
+    signCounts.set(model, counts);
+  }
+  return signCounts.get(model).get(sign.element) || 0;
+}
+
+// Drafts saved, edited or discarded. A draft that went was published when the
+// live views show its sign arriving (new content) or leaving (a new version's
+// live element, a removal); the live changes say so. Otherwise it was
+// discarded. Whole elements are compared, so a draft that changed only a
+// link's address, or words found elsewhere on the page, is told apart.
+function editorDraftItems(a, b, liveA, liveB) {
   const items = [];
-  const liveText = collapse(textOf(liveB.main || liveB.document));
+  const published = (from) => {
+    const before = occurrences(liveA, from.sign);
+    const after = occurrences(liveB, from.sign);
+    return from.kind === "new" ? after > before : after < before;
+  };
   for (const kind of EDITOR_DRAFT_KINDS) {
     const run = pairRun(
       editorDrafts(a).filter((draft) => draft.kind === kind),
@@ -121,8 +164,7 @@ function editorDraftItems(a, b, liveB) {
     }
     for (const to of run.added) items.push({ kind: "draft-added", draft: kind, tag: to.tag, text: to.text, live: to.live });
     for (const from of run.removed) {
-      const published = kind === "remove" ? !liveText.includes(from.text) : liveText.includes(from.text);
-      if (!published) items.push({ kind: "draft-discarded", draft: kind, tag: from.tag, text: from.text });
+      if (!published(from)) items.push({ kind: "draft-discarded", draft: kind, tag: from.tag, text: from.text });
     }
   }
   return items;
