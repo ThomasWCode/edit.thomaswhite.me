@@ -15,8 +15,12 @@
 // One mutation runs at a time (`busy`). The UI renders `state` and calls the
 // methods; `sleep` and `now` are injected so tests run instantly.
 
+import { describeFile, hasAutoTitle, noteOf, otherFile, prDescription, summarise } from "./describe.js";
 import { gitBlobSha, GitHubError } from "./github-client.js";
+import { sortPages } from "./site-files.js";
 
+// The title when the changes can't be described (and of pull requests opened
+// before titles were generated).
 export const PR_TITLE = "Text edits from the editor";
 export const BOT_LOGIN = "github-actions[bot]";
 const BASELINE_POLL_MS = 15_000;
@@ -129,6 +133,49 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
 
   const baselineChanged = () => state.changedPaths.some((path) => target.visualBaselinePages.includes(path));
 
+  // The branch's changes against main, from their merge base as the pull
+  // request shows them: { files, screenshots, title }. Only reads.
+  async function describeBranch() {
+    const comparison = await client.compare(target.base, target.branch);
+    const base = comparison.merge_base_commit ? (await client.getCommitTree(comparison.merge_base_commit.sha)).files : new Map();
+    const files = [];
+    const screenshots = [];
+    // In the editor's order, not GitHub's alphabetical one: pages as the site
+    // lists them, then the Record, then the rest.
+    const changed = comparison.files || [];
+    const pages = sortPages(changed.map((file) => file.filename).filter((path) => path.endsWith(".html")), { order: target.pageOrder, last: target.lockedFiles });
+    const rank = (path) => (path.endsWith(".html") ? pages.indexOf(path) : path === "docs/record.md" ? pages.length : pages.length + 1);
+    for (const file of [...changed].sort((a, b) => rank(a.filename) - rank(b.filename))) {
+      if (/\.png$/i.test(file.filename)) {
+        screenshots.push(file.filename);
+        continue;
+      }
+      if (!/\.(html|md)$/.test(file.filename)) {
+        files.push(otherFile(file.filename, file.status));
+        continue;
+      }
+      const beforeSha = base.get(file.filename) ?? null;
+      const afterSha = file.status === "removed" ? null : file.sha;
+      const [before, after] = await Promise.all([
+        beforeSha ? client.getBlobText(beforeSha) : null,
+        afterSha ? client.getBlobText(afterSha) : null,
+      ]);
+      files.push(describeFile({ path: file.filename, before, after }));
+    }
+    return { files, screenshots, title: files.length ? summarise(files) : PR_TITLE };
+  }
+
+  // Rewrites an open pull request's description from the branch, keeping your
+  // note (or setting `note`), and its title while it is still the generated
+  // one (or setting `title`). `pr` should be fresh from GitHub.
+  async function refreshPr(pr, { title = null, note = null } = {}) {
+    const described = await describeBranch();
+    const body = prDescription({ note: note ?? noteOf(pr.body), files: described.files, screenshots: described.screenshots, autoTitle: described.title });
+    const nextTitle = title && title.trim() ? title.trim() : hasAutoTitle(pr, PR_TITLE) ? described.title : pr.title;
+    const updated = await client.updatePr(pr.number, { title: nextTitle, body });
+    return { ...pr, ...updated, title: nextTitle, body };
+  }
+
   async function readBranchState() {
     const comparison = await client.compare(target.base, target.branch);
     set({
@@ -227,7 +274,7 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
       try {
         await readBranchState();
         pr = pr || (await client.findOpenPr());
-        if (pr) await client.updatePrBody(pr.number, prBody(state.changedPaths));
+        if (pr) pr = await refreshPr(await client.getPr(pr.number));
         notice = pr
           ? "Saved. The pull request is open, so its checks run again on this commit."
           : "Saved to the edits branch. Nothing runs on GitHub until you publish.";
@@ -269,8 +316,9 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
     return { moved: after !== before };
   }
 
-  // Publish: baselines when needed, then the pull request.
-  async function publish() {
+  // Publish: baselines when needed, then the pull request, titled `title` (or
+  // the generated title) with `note` above the generated list of changes.
+  async function publish({ title = "", note = "" } = {}) {
     return exclusive(async () => {
       const comparison = await readBranchState();
       if (comparison.ahead_by === 0) {
@@ -287,10 +335,20 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
       await readBranchState();
       let pr = await client.findOpenPr();
       if (!pr) {
+        let described = null;
+        try {
+          described = await describeBranch();
+        } catch {
+          // A description that fails to build never stops a publish.
+        }
+        const autoTitle = described ? described.title : PR_TITLE;
+        const body = described
+          ? prDescription({ note, files: described.files, screenshots: described.screenshots, autoTitle })
+          : [note.trim(), prBody(state.changedPaths)].filter(Boolean).join("\n\n");
         // A new pull request starts CI itself; dispatching as well would run it twice.
-        pr = await client.createPr({ title: PR_TITLE, body: prBody(state.changedPaths) });
+        pr = await client.createPr({ title: title.trim() || autoTitle, body });
       } else {
-        await client.updatePrBody(pr.number, prBody(state.changedPaths));
+        pr = await refreshPr(await client.getPr(pr.number), { title, note: note.trim() ? note : null });
         // Commits pushed by the baseline workflow's GITHUB_TOKEN start no workflow.
         if (movedByBot) await client.dispatchWorkflow(target.ciWorkflow, target.branch);
       }
@@ -447,5 +505,28 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
     });
   }
 
-  return { state, load, save, publish, refreshChecks, merge, refreshDeploy, updateFromMain, refreshScreenshots, startChecks };
+  // Your title and note for the open pull request, with the list of changes
+  // regenerated below the note.
+  async function updatePullRequest({ title = "", note = "" } = {}) {
+    return exclusive(async () => {
+      const pr = await refreshPr(await client.getPr(state.pr.number), { title, note });
+      set({ pr, notice: "Updated the pull request's title and description." });
+      return pr;
+    });
+  }
+
+  return {
+    state,
+    load,
+    save,
+    publish,
+    describeBranch,
+    updatePullRequest,
+    refreshChecks,
+    merge,
+    refreshDeploy,
+    updateFromMain,
+    refreshScreenshots,
+    startChecks,
+  };
 }

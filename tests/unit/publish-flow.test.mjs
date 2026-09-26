@@ -54,10 +54,12 @@ test("load, save, publish, checks, merge: the whole happy path on a deep page", 
   await flow.publish();
   assert.equal(flow.state.phase, "checking");
   const [pull] = fake.pulls();
-  assert.equal(pull.title, PR_TITLE);
+  assert.equal(pull.title, "Physics & Ideas: “things” → “stuff”", "a title generated from the change");
+  assert.notEqual(pull.title, PR_TITLE);
   assert.equal(pull.head.ref, "edits");
-  assert.match(pull.body, /- `physics\.html`/);
+  assert.match(pull.body, /\*\*Physics & Ideas\*\* \(`physics\.html`\)\n\n- “Thinking about things” → “Thinking about stuff”/);
   assert.match(pull.body, /docs\/record\.md/);
+  assert.match(pull.body, /<!-- editor:title Physics & Ideas: “things” → “stuff” -->/);
   assert.equal(countRequests(fake, "POST", /dispatches$/), 0, "a deep page needs no baselines and a new PR starts CI itself");
   assert.equal(fake.checkRuns().length, 3, "one CI run: three required jobs");
 
@@ -77,6 +79,39 @@ test("load, save, publish, checks, merge: the whole happy path on a deep page", 
   const reloaded = await flow.load();
   assert.equal(reloaded.onBranch, false);
   assert.equal(reloaded.head, fake.head("main"));
+});
+
+test("the pull request: your note survives saves, a generated title follows them, your own title is kept", async () => {
+  const { fake, flow } = await setup();
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking about stuff", loaded.files.get("physics.html"), fake)], "one");
+  await flow.publish({ title: "", note: "Two small fixes." });
+  const pull = () => fake.pulls()[0];
+  assert.equal(pull().title, "Physics & Ideas: “things” → “stuff”");
+  assert.ok(pull().body.startsWith("Two small fixes.\n\n<!-- editor:changes -->\n### Changes"));
+
+  await flow.save([await change("programming.html", "My first language was Lua", "My first language was Lua, then", loaded.files.get("programming.html"), fake)], "two");
+  assert.equal(pull().title, "Programming and Physics & Ideas: 2 wording changes", "a generated title follows the branch");
+  assert.ok(pull().body.startsWith("Two small fixes.\n\n"), "the note stays");
+  assert.match(pull().body, /\*\*Programming\*\* \(`programming\.html`\)[\s\S]*\*\*Physics & Ideas\*\*/);
+
+  await flow.updatePullRequest({ title: "Tidy two sentences", note: "Checked on a phone." });
+  assert.equal(pull().title, "Tidy two sentences");
+  await flow.save([await change("index.html", "Pick whatever", "Pick anything", loaded.files.get("index.html"), fake)], "three");
+  assert.equal(pull().title, "Tidy two sentences", "a title you set is never replaced");
+  assert.ok(pull().body.startsWith("Checked on a phone.\n\n"));
+  assert.match(pull().body, /\*\*Home\*\* \(`index\.html`\)/);
+
+  // A pull request from before titles were generated gets one on its next save.
+  const old = await setup();
+  const first = await old.flow.load();
+  await old.flow.save([await change("physics.html", "Thinking about things", "Thinking about stuff", first.files.get("physics.html"), old.fake)], "one");
+  await old.client.createPr({ title: PR_TITLE, body: "Edits made at https://edit.thomaswhite.me.\n\nPages changed:\n\n- `physics.html`\n" });
+  await old.flow.load();
+  await old.flow.save([await change("index.html", "Pick whatever", "Pick anything", first.files.get("index.html"), old.fake)], "two");
+  const [legacy] = old.fake.pulls();
+  assert.equal(legacy.title, "Home and Physics & Ideas: 2 wording changes");
+  assert.ok(legacy.body.startsWith("<!-- editor:changes -->"), "the old generated text is not kept as a note");
 });
 
 test("a stale head is fine when only other files changed (the baseline bot's PNGs)", async () => {

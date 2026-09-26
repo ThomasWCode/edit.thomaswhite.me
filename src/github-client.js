@@ -177,6 +177,9 @@ export function createGitHubClient({ target, fetch, getAccessToken, now = () => 
 
     updatePrBody: (number, body) => json("PATCH", `${repo}/pulls/${number}`, { body: { body } }),
 
+    // Title and description together ({ title, body }; either may be left out).
+    updatePr: (number, fields) => json("PATCH", `${repo}/pulls/${number}`, { body: fields }),
+
     getPr: (number) => json("GET", `${repo}/pulls/${number}`),
 
     async prFiles(number) {
