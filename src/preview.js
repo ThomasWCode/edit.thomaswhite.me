@@ -204,6 +204,20 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
       },
       options,
     );
+    // Pasted content becomes plain text on one line. The paste event carries
+    // the clipboard in every engine; cancelling it means no insertFromPaste
+    // follows, so the beforeinput branch below is only a fallback.
+    const insertPlain = (text) => {
+      if (text) doc.execCommand("insertText", false, text.replace(/[ \t]*[\r\n]+[ \t]*/g, " "));
+    };
+    doc.addEventListener(
+      "paste",
+      (event) => {
+        event.preventDefault();
+        if (editing) insertPlain(event.clipboardData ? event.clipboardData.getData("text/plain") : "");
+      },
+      options,
+    );
     doc.addEventListener(
       "beforeinput",
       (event) => {
@@ -213,8 +227,7 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
         }
         if (event.inputType === "insertFromPaste" || event.inputType === "insertFromPasteAsQuotation") {
           event.preventDefault();
-          const text = event.dataTransfer ? event.dataTransfer.getData("text/plain") : "";
-          if (text) doc.execCommand("insertText", false, text.replace(/[ \t]*[\r\n]+[ \t]*/g, " "));
+          insertPlain(event.dataTransfer ? event.dataTransfer.getData("text/plain") : "");
           return;
         }
         if (!ALLOWED_INPUT.has(event.inputType)) event.preventDefault();

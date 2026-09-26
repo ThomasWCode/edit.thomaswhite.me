@@ -89,6 +89,7 @@ export default [
     languageOptions: {
       globals: {
         ...nodeGlobals,
+        ClipboardEvent: "readonly",
         DataTransfer: "readonly",
         document: "readonly",
         InputEvent: "readonly",

@@ -62,11 +62,18 @@ test("formatting keys, line breaks and pasted markup never reach the page", asyn
   await typeAtEnd(page, paragraph, " A");
   await page.keyboard.press("Control+B");
   await page.keyboard.type("B");
+  // A script-made paste: engines differ on which event carries script-made
+  // clipboard data (WebKit: the paste event; Firefox: beforeinput), and the
+  // editor handles both, as it does real pastes.
   await paragraph.evaluate((element) => {
     const data = new DataTransfer();
     data.setData("text/plain", "C\nD");
     data.setData("text/html", "<b>C</b><br>D");
-    element.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertFromPaste", dataTransfer: data, bubbles: true, cancelable: true }));
+    const before = element.innerHTML;
+    element.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    if (element.innerHTML === before) {
+      element.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertFromPaste", dataTransfer: data, bubbles: true, cancelable: true }));
+    }
   });
   expect(await paragraph.evaluate((element) => element.innerHTML)).toBe("Pick whatever sounds a bit interesting. ABC D");
   // Shift+Enter finishes the block like Enter, without a line break.
@@ -75,6 +82,38 @@ test("formatting keys, line breaks and pasted markup never reach the page", asyn
   expect(await paragraph.evaluate((element) => element.innerHTML)).toBe("Pick whatever sounds a bit interesting. ABC D");
   await save(page);
   expect(treeWrites(fake)[0].body.tree[0].content).toContain("<p>Pick whatever sounds a bit interesting. ABC D</p>");
+});
+
+test("clicking a link never navigates; it opens the link in the panel to change its address", async ({ page }) => {
+  const fake = await createFake();
+  await openEditor(page, fake);
+  const link = frame(page).locator("a", { hasText: "more of what I read" });
+  await link.click();
+  await expect(frame(page).locator("h1")).toHaveText("Hi, I’m Tom.");
+  const panel = page.locator("#panel");
+  await expect(panel.getByRole("heading", { name: "Link" })).toBeVisible();
+  const address = panel.getByRole("textbox", { name: "Link address" }).first();
+  await expect(address).toHaveValue("/physics/#reading");
+  await address.fill("/physics/#questions");
+  await address.press("Enter");
+  await expect(page.locator("#save-button")).toHaveText("Save (1)");
+  await save(page);
+  expect(treeWrites(fake)[0].body.tree[0].content).toBe(
+    readFixture("index.html").replace('<a href="/physics/#reading">', '<a href="/physics/#questions">'),
+  );
+});
+
+test("the keyboard reaches a block with Tab and types at its end", async ({ page }) => {
+  const fake = await createFake();
+  await openEditor(page, fake);
+  const eyebrow = frame(page).locator("p.eyebrow", { hasText: "Heyyy" });
+  await eyebrow.focus();
+  await expect(eyebrow).toHaveAttribute("contenteditable", "true");
+  await page.keyboard.type("y");
+  await page.keyboard.press("Tab");
+  await expect(eyebrow).not.toHaveAttribute("contenteditable", "true");
+  await expect(eyebrow).toHaveText("Heyyyy");
+  await expect(page.locator("#save-button")).toHaveText("Save (1)");
 });
 
 test("a draft note's Done removes only its draft markers", async ({ page }) => {
