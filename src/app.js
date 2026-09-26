@@ -7,6 +7,7 @@ import { AuthNetworkError, SignedOutError } from "./auth.js";
 import { changedLines, checkPage, checkSite, curlQuotes, isExternalRedirect, siteContext } from "./checks.js";
 import { bodyText, commitMessageFor, describeFile, forAi, noteOf, summarise } from "./describe.js";
 import { confirmAction, openDialog, promptText } from "./dialogs.js";
+import { asDraft, discardDraft, draftAround, draftPhrase, makeDraft, markDraft, publishDraft } from "./drafting.js";
 import { countLineChanges, lineHunks, trimEqualRuns, wordDiff } from "./diff-view.js";
 import { $, button, externalLink, h } from "./dom.js";
 import {
@@ -22,7 +23,7 @@ import {
 } from "./edits.js";
 import { GitHubError } from "./github-client.js";
 import { newPostSource, normaliseMarkdown, recordSlugs } from "./markdown-files.js";
-import { attribute, blockText, buildPageModel, collapse, pageTitle, textOf } from "./page-model.js";
+import { attribute, blockText, buildPageModel, collapse, EDITOR_DRAFT_KINDS, pageTitle, textOf } from "./page-model.js";
 import { createPreview } from "./preview.js";
 import { BusyError, createPublishFlow, SaveConflictError } from "./publish-flow.js";
 import { fallbackLabel, isPublishedHtml, labelFromTitle, liveUrl, markdownFiles, readOnlyReason, sortPages } from "./site-files.js";
@@ -88,6 +89,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   let publishFields = null;
   let describingBranch = false;
   let publishOpenings = 0;
+  let draftMode = readDraftMode();
 
   const flow = createPublishFlow({
     client,
@@ -356,7 +358,27 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
         renderTopbar();
         return;
       }
+      // In draft mode a change to live text goes into a draft copy instead.
+      let drafted = result.model;
+      if (draftMode) {
+        try {
+          drafted = asDraft(before, result.model);
+        } catch (error) {
+          // Refused as a draft: the words typed are shown for copying.
+          if (error instanceof EditRejectedError && !error.typedText) error.typedText = blockText(result.model, key);
+          throw error;
+        }
+      }
       pushUndo(entry);
+      if (drafted !== result.model) {
+        entry.model = drafted;
+        entry.working = drafted.source;
+        generation += 1;
+        recordAction(entry, `Drafted a new version of a ${blockName(before, key).toLowerCase()}`, { reshaped: true });
+        preview.render(entry.model);
+        afterChange(entry);
+        return;
+      }
       entry.model = result.model;
       entry.working = result.model.source;
       if (result.restructured) generation += 1;
@@ -380,16 +402,28 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     preview.refreshToolbar();
   }
 
-  // Runs a structural, draft or attribute change on the current page.
-  async function applyOperation(label, operation, { reshapes = false, ...renderOptions } = {}) {
+  // Runs a structural, draft or attribute change on the current page. In draft
+  // mode a change to live content is kept as a draft copy (drafting "copy");
+  // operations on drafts themselves pass drafting "none".
+  async function applyOperation(label, operation, { reshapes = false, drafting = "copy", ...renderOptions } = {}) {
     preview.finishEditing();
     const entry = current();
     if (!entry || entry.kind !== "page") return;
     let result;
     try {
       result = operation(entry.model);
+      const made = result && result.model ? result.model : result;
+      if (draftMode && drafting === "copy" && made && made !== entry.model) {
+        const drafted = asDraft(entry.model, made);
+        if (drafted !== made) {
+          result = drafted;
+          reshapes = true;
+          label = `${label} (as a draft)`;
+        }
+      }
     } catch (error) {
-      toast(describeError(error, target), "error");
+      if (error instanceof EditRejectedError) toast(error.message, "error");
+      else toast(describeError(error, target), "error");
       return;
     }
     const next = result && result.model ? result.model : result;
@@ -458,8 +492,10 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     const from = original.sourceCodeLocation;
     const to = node.sourceCodeLocation;
     const originalInner = entry.original.slice(from.startTag.endOffset, from.endTag.startOffset);
-    applyOperation(`Reverted a ${blockName(entry.model, key).toLowerCase()}`, (model) =>
-      buildModel(entry, model.source.slice(0, to.startTag.endOffset) + originalInner + model.source.slice(to.endTag.startOffset)),
+    applyOperation(
+      `Reverted a ${blockName(entry.model, key).toLowerCase()}`,
+      (model) => buildModel(entry, model.source.slice(0, to.startTag.endOffset) + originalInner + model.source.slice(to.endTag.startOffset)),
+      { drafting: "none" },
     );
   }
 
@@ -490,21 +526,83 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     }
     await applyOperation(draft.kind === "check" ? "Approved a checked draft" : "Marked a draft done", (model) => completeDraft(model, key), {
       flashKey: draft.blockKey || null,
+      drafting: "none",
     });
+  }
+
+  // ---- The editor's drafts ----------------------------------------------------------
+
+  const DRAFT_NAMES = {
+    new: { what: "a draft: not on thomaswhite.me until published", publish: "Publish draft", discard: "Discard draft" },
+    replace: { what: "a new version, waiting as a draft: the live one above stays until it's published", publish: "Publish new version", discard: "Discard new version" },
+    remove: { what: "marked to remove: it stays live until the removal is published", publish: "Remove now", discard: "Keep it" },
+  };
+
+  async function runPublishDraft(key) {
+    const kind = attribute(current().model.nodeOf.get(key), "data-draft");
+    const label = kind === "remove" ? "Removed content marked to remove" : kind === "replace" ? "Published a new version" : "Published a draft";
+    await applyOperation(label, (model) => publishDraft(model, key), { reshapes: true, drafting: "none" });
+  }
+
+  async function runDiscardDraft(key) {
+    const entry = current();
+    const node = entry.model.nodeOf.get(key);
+    const kind = attribute(node, "data-draft");
+    if (kind !== "remove") {
+      const confirmed = await confirmAction($("confirm-dialog"), {
+        title: "Discard this draft?",
+        message: `“${snippet(textOf(node), 120)}” will be deleted${kind === "replace" ? "; the live version stays as it is" : ""}. Undo brings it back.`,
+        confirm: "Discard draft",
+        kind: "danger",
+      });
+      if (!confirmed) return;
+    }
+    await applyOperation(kind === "remove" ? "Kept content marked to remove" : "Discarded a draft", (model) => discardDraft(model, key), {
+      reshapes: true,
+      drafting: "none",
+    });
+  }
+
+  // Takes a block, or its section, off the live site until published again.
+  async function runMakeDraft(key, what) {
+    await applyOperation(`Made a ${what} a draft`, (model) => (what === "section" ? markDraft(model, key, "new") : makeDraft(model, key)), { drafting: "none" });
+  }
+
+  // The words last selected in the block being edited, as a draft phrase.
+  async function runDraftPhrase(kind) {
+    const words = preview.lastSelection();
+    if (!words) {
+      toast("Select some words in a paragraph first, then choose this.", "warning");
+      return;
+    }
+    await applyOperation(
+      kind === "new" ? "Kept words off the live site (as a draft)" : "Marked words to remove (as a draft)",
+      (model) => draftPhrase(model, words.key, words.start, words.end, kind),
+      { reshapes: true, drafting: "none" },
+    );
   }
 
   async function runAddAfter(key) {
     const entry = current();
-    await applyOperation(`Added a ${entry.model.nodeOf.get(key).tagName === "li" ? "list item" : "paragraph"}`, (model) => addAfter(model, key), {
-      selectAll: true,
-      reshapes: true,
-    });
+    const what = entry.model.nodeOf.get(key).tagName === "li" ? "list item" : "paragraph";
+    // In draft mode a new item starts as a draft: off the live site until published.
+    const inDraft = draftMode && !draftAround(entry.model, entry.model.nodeOf.get(key));
+    const add = (model) => {
+      const added = addAfter(model, key);
+      return inDraft ? { model: markDraft(added.model, added.key, "new"), key: added.key } : added;
+    };
+    await applyOperation(inDraft ? `Added a ${what} (as a draft)` : `Added a ${what}`, add, { selectAll: true, reshapes: true, drafting: "none" });
   }
 
   async function runRemove(key) {
     const entry = current();
     const info = removalInfo(entry.model, key);
     const what = info.tag === "li" ? "list item" : "paragraph";
+    // In draft mode it stays live, marked to go when the draft is published.
+    if (draftMode && !draftAround(entry.model, entry.model.nodeOf.get(key))) {
+      await applyOperation(`Marked a ${what} to remove (as a draft)`, (model) => markDraft(model, key, "remove"), { drafting: "none" });
+      return;
+    }
     const confirmed = await confirmAction($("confirm-dialog"), {
       title: `Remove this ${what}?`,
       message: info.lastItem
@@ -513,7 +611,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
       confirm: `Remove ${what}`,
       kind: "danger",
     });
-    if (confirmed) await applyOperation(`Removed a ${what}`, (model) => removeBlock(model, key), { reshapes: true });
+    if (confirmed) await applyOperation(`Removed a ${what}`, (model) => removeBlock(model, key), { reshapes: true, drafting: "none" });
   }
 
   // "Done" alone is ambiguous when a paragraph holds several inline drafts,
@@ -529,7 +627,24 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     const block = entry.model.blockByKey.get(key);
     if (!block || block.lock) return [];
     const actions = [];
-    for (const draft of entry.model.drafts.filter((item) => item.key === key || item.blockKey === key)) {
+    // The editor's own draft this block is in (itself or around it).
+    const around = draftAround(entry.model, block.node);
+    if (around && EDITOR_DRAFT_KINDS.has(around.kind)) {
+      const draftKey = entry.model.keyOf.get(around.node);
+      const names = DRAFT_NAMES[around.kind];
+      actions.push({ label: names.publish, title: `This is ${names.what}.`, kind: "draft", run: () => runPublishDraft(draftKey) });
+      actions.push({ label: names.discard, title: names.discard, kind: around.kind === "remove" ? "" : "danger", run: () => runDiscardDraft(draftKey) });
+    }
+    // Phrases in it kept as drafts.
+    for (const draft of entry.model.drafts.filter((item) => EDITOR_DRAFT_KINDS.has(item.kind) && item.blockKey === key && item.key !== key && (!around || item.node !== around.node))) {
+      actions.push({
+        label: `${DRAFT_NAMES[draft.kind].publish}: “${snippet(textOf(draft.node), 14)}”`,
+        title: `${DRAFT_NAMES[draft.kind].publish}: ${snippet(textOf(draft.node), 120)}`,
+        kind: "draft",
+        run: () => runPublishDraft(draft.key),
+      });
+    }
+    for (const draft of entry.model.drafts.filter((item) => !EDITOR_DRAFT_KINDS.has(item.kind) && (item.key === key || item.blockKey === key))) {
       actions.push({
         label: draftLabel(draft, key),
         title: `${draft.kind === "check" ? "Approve" : "Mark done"}: ${snippet(textOf(draft.node), 120)}`,
@@ -1289,7 +1404,34 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
           : `Pull request #${state.pr.number}: checks running (${done} of ${target.requiredChecks.length} done).`;
     } else if (state.aheadBy > 0) status = `Saved on edits: ${state.changedPaths.length} ${state.changedPaths.length === 1 ? "file differs" : "files differ"} from main. Publish when ready.`;
     else status = state.notice || `Editing ${target.owner}/${target.repo}.`;
+    if (draftMode && !state.busy) status = `Drafts on: changes are kept off thomaswhite.me until you publish them. ${status}`;
     setStatus(status);
+  }
+
+  // ---- Draft mode ----------------------------------------------------------------------
+  // While on, every change to live content is saved as a draft (drafting.js),
+  // left out of thomaswhite.me until published. Remembered for this tab only.
+
+  function readDraftMode() {
+    try {
+      return sessionStorage.getItem("siteEditor.draftMode") === "on";
+    } catch {
+      return false;
+    }
+  }
+
+  function setDraftMode(on) {
+    draftMode = on;
+    try {
+      sessionStorage.setItem("siteEditor.draftMode", on ? "on" : "off");
+    } catch {
+      // A convenience only: the mode still applies until the tab closes.
+    }
+    const toggle = $("draft-mode-button");
+    toggle.setAttribute("aria-pressed", String(on));
+    toggle.textContent = on ? "Drafts: on" : "Drafts: off";
+    renderTopbar();
+    renderPanel();
   }
 
   function renderFileList() {
@@ -1401,7 +1543,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
       section.append(h("p", {}, block.lock));
       return section;
     }
-    const drafts = model.drafts.filter((item) => item.key === key || item.blockKey === key);
+    const drafts = model.drafts.filter((item) => !EDITOR_DRAFT_KINDS.has(item.kind) && (item.key === key || item.blockKey === key));
     for (const draft of drafts) {
       section.append(
         h(
@@ -1427,10 +1569,61 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     }
     if (canRevert(entry, key)) row.append(button("Revert this block", () => revertBlock(key), { small: true, kind: "quiet" }));
     if (row.children.length) section.append(row);
+    section.append(draftsPart(model, block));
     const enclosing = ancestorsWithin(block.node, model.main).find((node) => node.tagName === "a" && attribute(node, "href") !== null);
     if (enclosing) section.append(hrefEditor(entry, model.keyOf.get(enclosing), "This block is inside a link to"));
     section.append(h("p", { class: "small hint" }, "Type to edit. Enter or clicking elsewhere finishes the block."));
     return section;
+  }
+
+  // The panel's drafts part: the draft this block is in, with Publish and
+  // Discard; or, for live content, ways to make it (or its section, or some
+  // selected words) a draft; and any phrases in it kept as drafts.
+  function draftsPart(model, block) {
+    const part = h("div", { class: "panel-drafts" }, h("h3", {}, "Drafts"));
+    const around = draftAround(model, block.node);
+    if (around && EDITOR_DRAFT_KINDS.has(around.kind)) {
+      const draftKey = model.keyOf.get(around.node);
+      const names = DRAFT_NAMES[around.kind];
+      part.append(
+        h("p", { class: "small" }, `${around.node === block.node ? "This" : `The ${blockName(model, draftKey).toLowerCase()} this is in`} is ${names.what}.`),
+        h(
+          "div",
+          { class: "button-row" },
+          button(names.publish, () => runPublishDraft(draftKey), { small: true }),
+          button(names.discard, () => runDiscardDraft(draftKey), { small: true, kind: around.kind === "remove" ? "quiet" : "danger" }),
+        ),
+      );
+    } else if (!around) {
+      const section = [block.node, ...ancestorsWithin(block.node, model.main)].find((node) => node.tagName === "section");
+      const whole = h("div", { class: "button-row" }, button("Make this a draft", () => runMakeDraft(block.key, blockName(model, block.key).toLowerCase()), { small: true }));
+      if (section) whole.append(button("Make the section a draft", () => runMakeDraft(model.keyOf.get(section), "section"), { small: true }));
+      part.append(
+        h("p", { class: "small" }, "A draft is saved but left out of thomaswhite.me until you publish it. Turn on Drafts in the top bar to keep every change as one."),
+        whole,
+        h("p", { class: "small" }, "Or select some words in the text, then:"),
+        h(
+          "div",
+          { class: "button-row" },
+          button("Keep them off the live site", () => runDraftPhrase("new"), { small: true }),
+          button("Remove them when published", () => runDraftPhrase("remove"), { small: true }),
+        ),
+      );
+    }
+    for (const draft of model.drafts.filter((item) => EDITOR_DRAFT_KINDS.has(item.kind) && item.blockKey === block.key && (!around || item.node !== around.node))) {
+      const names = DRAFT_NAMES[draft.kind];
+      part.append(
+        h(
+          "div",
+          { class: "panel-row" },
+          h("span", { class: `tag tag--draft-${draft.kind}` }, draft.kind === "remove" ? "To remove" : "Draft"),
+          h("span", { class: "panel-row-text" }, `“${snippet(textOf(draft.node), 40)}”`),
+          button(names.publish, () => runPublishDraft(draft.key), { small: true }),
+          button(names.discard, () => runDiscardDraft(draft.key), { small: true, kind: "quiet" }),
+        ),
+      );
+    }
+    return part;
   }
 
   function ancestorsWithin(node, stop) {
@@ -1615,6 +1808,9 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     $("save-button").onclick = () => startSave();
     $("publish-button").onclick = () => openPublish();
     $("undo-button").onclick = () => undo();
+    $("draft-mode-button").onclick = () => setDraftMode(!draftMode);
+    $("draft-mode-button").setAttribute("aria-pressed", String(draftMode));
+    $("draft-mode-button").textContent = draftMode ? "Drafts: on" : "Drafts: off";
     $("discard-button").onclick = () => discardPage();
     $("new-post-button").onclick = () => newPost();
     $("sidebar-toggle").onclick = () => {

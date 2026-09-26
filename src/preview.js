@@ -57,6 +57,7 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
   let model = null;
   let doc = null;
   let editing = null;
+  let lastWords = null;
   let selected = null;
   let toolbar = null;
   let toolbarFor = null;
@@ -133,6 +134,25 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
 
   function wire() {
     const options = { capture: true };
+    // The last words selected in the block being edited, kept for the panel's
+    // draft buttons (clicking one moves focus out of the frame).
+    doc.addEventListener("selectionchange", () => {
+      const selection = doc.getSelection();
+      if (!editing || !selection || selection.isCollapsed || !editing.contains(selection.anchorNode) || !editing.contains(selection.focusNode)) return;
+      const walker = doc.createTreeWalker(editing, NodeFilter.SHOW_TEXT);
+      const range = selection.getRangeAt(0);
+      let offset = 0;
+      let start = null;
+      let end = null;
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (node === range.startContainer) start = offset + range.startOffset;
+        if (node === range.endContainer) end = offset + range.endOffset;
+        offset += node.data.length;
+      }
+      if (start !== null && end !== null && end > start) {
+        lastWords = { key: editing.getAttribute("data-edit-key"), start, end, text: selection.toString() };
+      }
+    });
     doc.addEventListener(
       "mousedown",
       (event) => {
@@ -296,6 +316,7 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
     const previous = iframe.contentDocument;
     const token = (renderToken += 1);
     editing = null;
+    lastWords = null;
     model = next;
     doc = null;
     pendingFocus = { focusKey, flashKey, selectAll, scroll };
@@ -435,5 +456,8 @@ export function createPreview({ iframe, overlay, wrap, assetsOrigin, editorOrigi
       if (!editing || !editing.isConnected) return null;
       return { key: editing.getAttribute("data-edit-key"), snapshot: snapshotFromDom(editing) };
     },
+    // { key, start, end, text } of the last words selected in a block, offsets
+    // counted over the block's text as the page model has it; null if none.
+    lastSelection: () => lastWords,
   };
 }
