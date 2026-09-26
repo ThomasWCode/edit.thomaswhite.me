@@ -71,7 +71,16 @@ export async function createFakeGitHub({
     conflicts: false,
     // When set, the next request answers 401 once (an expired access token).
     expireNextRequest: false,
+    // Listings a dispatched run is missing from, as on GitHub, where a run
+    // appears a few seconds after its dispatch.
+    dispatchLag: 0,
   };
+
+  function listed(run) {
+    if (!run.hiddenReads) return true;
+    run.hiddenReads -= 1;
+    return false;
+  }
 
   async function storeTree(map) {
     const entries = [...map].sort(([a], [b]) => (a < b ? -1 : 1));
@@ -454,6 +463,7 @@ export async function createFakeGitHub({
         status: "queued",
         conclusion: null,
         readsLeft: workflowReads,
+        hiddenReads: settings.dispatchLag,
         created_at: new Date(now()).toISOString(),
         html_url: `https://github.com/${owner}/${repo}/actions/runs/${nextId}`,
       });
@@ -465,13 +475,14 @@ export async function createFakeGitHub({
       const event = url.searchParams.get("event");
       const runs = workflowRuns
         .filter((run) => run.path === `.github/workflows/${file}` && (!branch || run.head_branch === branch) && (!event || run.event === event))
+        .filter(listed)
         .reverse();
       for (const run of runs) await advanceWorkflow(run);
       return json(200, { total_count: runs.length, workflow_runs: runs.map(publicRun) });
     }],
     ["GET", /^\/actions\/runs$/, async (match, request, body, url) => {
       const branch = url.searchParams.get("branch");
-      const runs = workflowRuns.filter((run) => !branch || run.head_branch === branch).reverse();
+      const runs = workflowRuns.filter((run) => !branch || run.head_branch === branch).filter(listed).reverse();
       for (const run of runs) await advanceWorkflow(run);
       return json(200, { total_count: runs.length, workflow_runs: runs.map(publicRun) });
     }],

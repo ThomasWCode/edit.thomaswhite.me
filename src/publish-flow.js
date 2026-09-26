@@ -21,6 +21,8 @@ export const PR_TITLE = "Text edits from the editor";
 export const BOT_LOGIN = "github-actions[bot]";
 const BASELINE_POLL_MS = 15_000;
 const BASELINE_TIMEOUT_MS = 30 * 60_000;
+const UPDATE_POLL_MS = 2_000;
+const UPDATE_TIMEOUT_MS = 60_000;
 const MERGEABLE_RETRIES = 5;
 
 export class SaveConflictError extends Error {
@@ -240,6 +242,10 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
   // Dispatches the baseline workflow on `edits` and waits for its run.
   async function runBaselines() {
     const before = await client.getRef(target.branch);
+    // The dispatch doesn't name the run it starts, and GitHub lists it only
+    // after a few seconds: runs already listed are set aside, so the run
+    // followed is a new one, never an earlier run on the same branch.
+    const earlier = new Set((await client.listWorkflowRuns(target.baselineWorkflow, { branch: target.branch })).map((item) => item.id));
     const dispatchedAt = now();
     set({ phase: "baselines", notice: "Updating the screenshot baselines on GitHub (about four minutes)…", baselineRun: null, changedImages: [] });
     await client.dispatchWorkflow(target.baselineWorkflow, target.branch);
@@ -247,7 +253,7 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
     while (now() - dispatchedAt < BASELINE_TIMEOUT_MS) {
       await sleep(run ? BASELINE_POLL_MS : 5_000);
       const runs = await client.listWorkflowRuns(target.baselineWorkflow, { branch: target.branch });
-      run = runs.find((item) => Date.parse(item.created_at) >= dispatchedAt - 60_000) || null;
+      run = runs.find((item) => !earlier.has(item.id)) || null;
       if (run) set({ baselineRun: { status: run.status, conclusion: run.conclusion, url: run.html_url } });
       if (run && run.status === "completed") break;
     }
@@ -400,12 +406,26 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
     return state.deploy;
   }
 
+  // Merges main into edits (the pull request's "Update branch"). GitHub does
+  // the merge a moment after accepting the request: this waits for edits to
+  // move and reads its new tree, so the interface can reload the files before
+  // anything is checked or saved against the old ones.
   async function updateFromMain() {
     return exclusive(async () => {
       const pr = await client.getPr(state.pr.number);
       await client.updateBranch(pr.number, pr.head.sha);
-      set({ phase: "checking", checks: [], checkedSha: null, notice: "Brought in main's changes; the checks run again." });
-      return { updated: true };
+      const started = now();
+      let head = pr.head.sha;
+      while (head === pr.head.sha) {
+        if (now() - started > UPDATE_TIMEOUT_MS) throw new Error("GitHub hasn't finished bringing in main's changes yet. Refresh in a minute.");
+        await sleep(UPDATE_POLL_MS);
+        head = await client.getRef(target.branch);
+      }
+      if (!head) throw new GitHubError({ status: 404, code: "not_found", message: `${target.branch} was not found.` });
+      const { files } = await client.getCommitTree(head);
+      set({ head, files, phase: "checking", checks: [], checkedSha: null, notice: "Brought in main's changes; the checks run again." });
+      await readBranchState();
+      return { updated: true, head };
     });
   }
 

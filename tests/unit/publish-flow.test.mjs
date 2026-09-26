@@ -214,6 +214,38 @@ test("behind main: Update from main merges main into edits and re-runs the check
   assert.equal(flow.state.behindBy, 0);
 });
 
+test("Update from main waits for GitHub's merge to land, then holds the new tree", async () => {
+  // GitHub merges a moment after answering 202: edits still reads as before.
+  let staleReads = 0;
+  let oldHead = null;
+  const { fake, flow } = await setup({
+    wrapFetch: (fetch, fakeRef) => async (url, init = {}) => {
+      if (staleReads > 0 && String(url).endsWith("/git/ref/heads/edits")) {
+        staleReads -= 1;
+        return new Response(JSON.stringify({ ref: "refs/heads/edits", object: { sha: oldHead, type: "commit" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (init.method === "PUT" && String(url).endsWith("/update-branch")) {
+        oldHead = fakeRef.head("edits");
+        staleReads = 2;
+      }
+      return fetch(url, init);
+    },
+  });
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking more", loaded.files.get("physics.html"), fake)], "one");
+  await flow.publish();
+  await fake.commitAs("main", { "index.html": fake.fileAt("main", "index.html").replace("Pick whatever", "Pick anything") });
+  const result = await flow.updateFromMain();
+  assert.equal(staleReads, 0, "it waited through the stale reads");
+  assert.equal(result.head, fake.head("edits"));
+  assert.equal(flow.state.head, fake.head("edits"));
+  assert.equal(flow.state.files.get("index.html"), await gitBlobSha(fake.fileAt("edits", "index.html")), "main's change is in the tree it holds");
+  assert.equal(flow.state.behindBy, 0);
+});
+
 test("one GitHub action at a time; nothing to publish when edits equals main", async () => {
   const { fake, flow } = await setup();
   const loaded = await flow.load();
@@ -308,6 +340,24 @@ test("a pull request merged or closed on GitHub itself is noticed", async () => 
   assert.equal(kept.onBranch, true);
   assert.equal(closed.flow.state.aheadBy, 1);
   assert.equal((await closed.flow.publish()).pr.number, 2, "publishing again opens a new pull request");
+});
+
+test("Publish follows the baseline run it dispatched, not an earlier one, even before GitHub lists it", async () => {
+  const { fake, client, flow } = await setup();
+  const loaded = await flow.load();
+  const first = await flow.save([await change("index.html", "Pick whatever", "Pick anything", loaded.files.get("index.html"), fake)], "one");
+  // An earlier baseline run on edits, finished moments ago, then a person's save on top.
+  await client.dispatchWorkflow(target.baselineWorkflow, target.branch);
+  while ((await client.listWorkflowRuns(target.baselineWorkflow, { branch: target.branch }))[0].status !== "completed");
+  await flow.save([await change("index.html", "Pick anything", "Pick something", first.files.get("index.html"), fake, "edits")], "two");
+
+  fake.settings.dispatchLag = 2;
+  await flow.publish();
+  const runs = fake.workflowRuns().filter((run) => run.name === "Update visual baselines");
+  assert.equal(runs.length, 2);
+  assert.equal(flow.state.baselineRun.url, runs.at(-1).html_url, "the run this Publish dispatched");
+  assert.ok(flow.state.changedImages.length > 0, "and its regenerated PNGs");
+  assert.equal(fake.pulls()[0].head.sha, fake.head("edits"), "the pull request opened on the new baseline commit");
 });
 
 test("the merge keeps edits when another tab saved on top of the merged head", async () => {
