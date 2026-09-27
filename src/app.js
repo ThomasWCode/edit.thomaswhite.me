@@ -335,6 +335,15 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     entry.log.push({ id: `${generation}:action:${entry.log.length}`, label, before: null, after: null, ...extra });
   }
 
+  // The part of a log made after `sent` (the log when Save was pressed): new
+  // items, and a block changed again since, from the text that was saved.
+  function unsavedLog(log, sent) {
+    const saved = new Map(sent.map((item) => [item.id, item]));
+    return log
+      .filter((item) => !saved.has(item.id) || saved.get(item.id).after !== item.after)
+      .map((item) => (saved.has(item.id) ? { ...item, before: saved.get(item.id).after } : item));
+  }
+
   // Adding or removing a paragraph or list item shifts the keys after it, so
   // a key no longer names the same element in the file as loaded. The log
   // records it, and follows Undo, Save, Discard and reloads.
@@ -1049,33 +1058,51 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
 
   // `message` is { title, body } from the Save dialog; without one (saving the
   // other files after a conflict) the generated message is used.
+  //
+  // Typing goes on while GitHub answers. Each file keeps what it held when
+  // Save was pressed (`working`, `model`, the log and the undo steps then), so
+  // a file changed meanwhile keeps those changes, unsaved, on top of the text
+  // that was saved.
   async function doSave(dirty, message = null) {
     const changes = dirty.map((entry) => ({
       entry,
       path: entry.path,
       text: entry.kind === "markdown" ? normaliseMarkdown(entry.working) : entry.working,
       loadedSha: entry.isNew ? null : entry.loadedSha,
+      working: entry.working,
+      model: entry.model,
+      log: entry.log.map((item) => ({ ...item })),
+      undo: new Set(entry.undo),
     }));
     try {
       const { files } = await flow.save(
         changes.map(({ path, text, loadedSha }) => ({ path, text, loadedSha })),
         message ? commitText(message) : commitMessageFor(describeEntries(dirty)),
       );
-      for (const { entry, text } of changes) {
+      for (const change of changes) {
+        const { entry, text } = change;
         entry.loadedSha = files.get(entry.path);
         entry.original = text;
-        entry.working = text;
         entry.isNew = false;
-        if (entry.kind === "page") entry.originalModel = entry.model;
-        entry.undo = [];
-        entry.log = [];
+        if (entry.working === change.working) {
+          entry.working = text;
+          if (entry.kind === "page") entry.originalModel = entry.model;
+          entry.undo = [];
+          entry.log = [];
+        } else {
+          if (entry.kind === "page") entry.originalModel = change.model;
+          entry.undo = entry.undo.filter((step) => !change.undo.has(step)).map((step) => ({ ...step, log: unsavedLog(step.log, change.log) }));
+          entry.log = unsavedLog(entry.log, change.log);
+        }
         persist(entry);
       }
       generation += 1;
       toast(flow.state.notice || "Saved.", "success");
       const entry = current();
-      if (entry && entry.kind === "page") preview.setChangedKeys([]);
-      if (entry && entry.kind === "markdown") $("markdown-editor").value = entry.working;
+      if (entry && entry.kind === "page") preview.setChangedKeys(changedKeys(entry));
+      // The box is reset to the text saved only if nothing was typed in it since.
+      const saved = changes.find((change) => change.entry === entry);
+      if (entry && entry.kind === "markdown" && saved && $("markdown-editor").value === saved.working) $("markdown-editor").value = entry.working;
       renderFileList();
       renderPanel();
       renderTopbar();

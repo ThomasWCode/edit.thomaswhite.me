@@ -1,10 +1,11 @@
-// Finding 1. Words finished while a Save is still talking to GitHub. The ref
-// update is held for four seconds so there is time to type, as a slow
-// connection or an open pull request (whose description is rebuilt on every
-// save) would give. Each test asserts the safe outcome, so it fails today.
+// Finding 1 of the data-safety audit (docs/audits/2026-09-27-merge-safety.md):
+// words finished while a Save is still talking to GitHub stay unsaved, for the
+// next Save. The ref update is held for four seconds so there is time to type,
+// as a slow connection or an open pull request (whose description is rebuilt
+// on every save) would give.
 /* global sessionStorage */
 import { expect, test } from "@playwright/test";
-import { createFake, frame, openEditor, typeAtEnd } from "../../../tests/e2e/support.mjs";
+import { createFake, frame, openEditor, save, typeAtEnd } from "./support.mjs";
 
 const slowRefUpdate = (ms) => async (page) => {
   await page.route("https://api.github.com/repos/*/*/git/refs/heads/edits", async (route) => {
@@ -51,6 +52,8 @@ test("Record tab: a line typed while a save is in flight is kept", async ({ page
   expect.soft(await box.inputValue(), "the line typed during the save is still in the box").toContain("TYPED-DURING-SAVE");
   expect.soft(await page.locator("#save-button").textContent(), "and counts as unsaved").toBe("Save (1)");
   expect.soft(await stored(page), "and is mirrored to sessionStorage").toContain("TYPED-DURING-SAVE");
+  await save(page);
+  expect(fake.fileAt("edits", "docs/record.md"), "the next Save commits it").toContain("FIRST-SAVED-LINE\nTYPED-DURING-SAVE");
 });
 
 test("Page: a paragraph finished while a save is in flight is kept", async ({ page }) => {
@@ -70,4 +73,7 @@ test("Page: a paragraph finished while a save is in flight is kept", async ({ pa
   await expect(page.locator("#stage-title")).toHaveText("Home");
   await page.waitForTimeout(2000);
   expect.soft(await frame(page).locator("main").textContent(), "and survives a reload").toContain("MIDSAVE");
+  await save(page);
+  expect(fake.fileAt("edits", "index.html"), "the next Save commits it").toContain("MIDSAVE");
+  expect(fake.fileAt("edits", "index.html")).toContain("interesting. Really.");
 });
