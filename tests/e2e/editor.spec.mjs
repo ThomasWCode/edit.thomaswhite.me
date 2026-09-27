@@ -185,7 +185,7 @@ test("the Record tab edits docs/record.md as plain text", async ({ page }) => {
   expect(tree.body.tree[0].content).toBe(`${readFixture("docs/record.md")}- A new fact.\n`);
 });
 
-test("Publish opens the pull request, waits for green checks, then merges and deletes edits", async ({ page }) => {
+test("Publish opens the pull request, waits for green checks, then merges and moves edits up to the merge", async ({ page }) => {
   const fake = await createFake();
   await openEditor(page, fake);
   await openPage(page, "Physics & Ideas");
@@ -206,7 +206,8 @@ test("Publish opens the pull request, waits for green checks, then merges and de
   await expect(merge).toBeEnabled();
   await merge.click();
   await expect(dialog).toContainText("Merged.");
-  expect(fake.head("edits")).toBeNull();
+  expect(fake.head("edits")).toBe(fake.head("main"));
+  expect(fake.requests.filter((request) => request.method === "DELETE")).toHaveLength(0);
   expect(fake.fileAt("main", "physics.html")).toContain("Thinking about things (and stuff)");
   expect(fake.commit(fake.head("main")).parents).toHaveLength(2);
 });

@@ -188,7 +188,7 @@ test("pull request, checks, workflow and merge calls use the target's branch nam
     new Response(null, { status: 204 }),
     json(200, { workflow_runs: [{ id: 1 }] }),
     json(200, { merged: true, sha: "m" }),
-    json(422, { message: "Reference does not exist" }),
+    json(200, { ref: "refs/heads/edits", object: { sha: "m" } }),
     json(200, { workflow_runs: [{ name: "Publish the live site" }, { name: "pages-build-deployment" }, { name: "Test suite" }] }),
   ]);
   assert.deepEqual(await client.findOpenPr(), { number: 7 });
@@ -197,7 +197,7 @@ test("pull request, checks, workflow and merge calls use the target's branch nam
   assert.equal(await client.dispatchWorkflow("update-visual-baselines.yml", "edits"), null);
   assert.deepEqual(await client.listWorkflowRuns("update-visual-baselines.yml", { branch: "edits" }), [{ id: 1 }]);
   assert.deepEqual(await client.mergePr(8, "head"), { merged: true, sha: "m" });
-  await client.deleteBranch("edits");
+  await client.updateRef("edits", "m");
   assert.deepEqual(
     (await client.deployRuns()).map((run) => run.name),
     ["Publish the live site", "pages-build-deployment"],
@@ -212,12 +212,13 @@ test("pull request, checks, workflow and merge calls use the target's branch nam
     "POST /actions/workflows/update-visual-baselines.yml/dispatches",
     "GET /actions/workflows/update-visual-baselines.yml/runs?per_page=10&branch=edits&event=workflow_dispatch",
     "PUT /pulls/8/merge",
-    "DELETE /git/refs/heads/edits",
+    "PATCH /git/refs/heads/edits",
     "GET /actions/runs?branch=main&per_page=10",
   ]);
   assert.deepEqual(calls[1].body, { title: "Text edits from the editor", head: "edits", base: "main", body: "Pages changed" });
   assert.deepEqual(calls[3].body, { ref: "edits" });
   assert.deepEqual(calls[5].body, { merge_method: "merge", sha: "head" });
+  assert.deepEqual(calls[6].body, { sha: "m", force: false }, "a fast-forward only, never a force");
 });
 
 test("mergeBranch merges one branch into another with no pull request", async () => {

@@ -67,7 +67,9 @@ test("load, save, publish, checks, merge: the whole happy path on a deep page", 
   assert.ok(flow.state.checks.every((check) => check.state === "passed"));
   const result = await flow.merge();
   assert.equal(result.merged, true);
-  assert.equal(fake.head("edits"), null, "edits is deleted after the merge");
+  assert.equal(fake.head("edits"), fake.head("main"), "edits is moved up to the merge, not deleted");
+  assert.equal(countRequests(fake, "DELETE", /./), 0);
+  assert.equal(flow.state.onBranch, false, "and the tab works as if there were no edits");
   assert.equal(flow.state.aheadBy, 0, "nothing is left to publish");
   assert.deepEqual(flow.state.changedPaths, []);
   assert.equal(fake.fileAt("main", "physics.html"), edit.text);
@@ -487,11 +489,12 @@ test("a pull request merged or closed on GitHub itself is noticed", async () => 
   assert.equal(flow.state.mergedSha, fake.head("main"));
   assert.match(flow.state.notice, /merged on GitHub/);
 
-  // GitHub keeps the merged branch; the next load removes it and reads main.
+  // GitHub keeps the merged branch; the next load moves it up to main and reads main.
   assert.ok(fake.head("edits"));
   await fake.commitAs("main", { "docs/record.md": `${fake.fileAt("main", "docs/record.md")}\nPushed from a Claude session.\n` });
   const reloaded = await flow.load();
-  assert.equal(fake.head("edits"), null);
+  assert.equal(fake.head("edits"), fake.head("main"));
+  assert.equal(countRequests(fake, "DELETE", /./), 0);
   assert.equal(reloaded.onBranch, false);
   assert.equal(reloaded.head, fake.head("main"));
 
@@ -554,6 +557,102 @@ test("the merge keeps edits when another tab saved on top of the merged head", a
   assert.match(fake.fileAt("edits", "docs/record.md"), /Saved in another tab/);
   assert.equal(fake.requests.filter((request) => request.method === "DELETE").length, 0);
   assert.match(flow.state.notice, /newer saves/);
+});
+
+test("an edits holding nothing main lacks is moved up, never deleted, and the tab works exactly as with no edits", async () => {
+  const shape = (flow) => {
+    const { head, onBranch, pr, phase, aheadBy, behindBy, changedPaths, notice } = flow.state;
+    return { head, onBranch, pr, phase, aheadBy, behindBy, changedPaths, notice, files: [...flow.state.files] };
+  };
+  const views = {};
+  for (const kind of ["no edits", "edits at main", "edits behind main"]) {
+    const { fake, client, flow } = await setup();
+    const moveMain = () => fake.commitAs("main", { "docs/record.md": `${fake.fileAt("main", "docs/record.md")}\nA fact from a Claude session.\n` });
+    if (kind === "edits at main") await moveMain();
+    if (kind !== "no edits") await client.createBranch("edits", fake.head("main"));
+    if (kind !== "edits at main") await moveMain();
+    const loaded = await flow.load({ autoUpdate: true });
+    assert.equal(loaded.onBranch, false, kind);
+    views[kind] = shape(flow);
+    if (kind !== "no edits") assert.equal(fake.head("edits"), fake.head("main"), `${kind}: moved up to main`);
+    if (kind === "edits at main") assert.equal(countRequests(fake, "PATCH", /\/git\/refs\//), 0, "already there: nothing written");
+
+    // A save starts from main's head, as on a new edits, and moves edits up to it.
+    const main = fake.head("main");
+    const saved = await flow.save([await change("physics.html", "Thinking about things", "Thinking more", loaded.files.get("physics.html"), fake)], "one");
+    assert.deepEqual(fake.commit(saved.sha).parents, [main], `${kind}: the save's parent is main's head`);
+    assert.equal(fake.head("edits"), saved.sha);
+    assert.equal(flow.state.onBranch, true);
+    assert.deepEqual([flow.state.aheadBy, flow.state.behindBy], [1, 0]);
+    assert.equal(countRequests(fake, "DELETE", /./), 0, `${kind}: nothing deleted`);
+  }
+  for (const [kind, view] of Object.entries(views)) {
+    assert.deepEqual({ ...view, head: null }, { ...views["no edits"], head: null }, `${kind} loads as no edits does`);
+  }
+});
+
+test("a fast-forward refused for any other reason loses nothing, and the tab still works as with no edits", async () => {
+  // GitHub refuses the ref update once (a permission, say), or its answer is lost after it landed.
+  for (const failure of ["refused", "answer lost"]) {
+    let fail = false;
+    const { fake, client, flow } = await setup({
+      wrapFetch: (fetch) => async (url, init = {}) => {
+        if (fail && init.method === "PATCH" && String(url).endsWith("/git/refs/heads/edits")) {
+          fail = false;
+          if (failure === "refused") {
+            return new Response(JSON.stringify({ message: "Resource not accessible by integration" }), { status: 403, headers: { "Content-Type": "application/json" } });
+          }
+          await fetch(url, init);
+          throw new TypeError("Failed to fetch");
+        }
+        return fetch(url, init);
+      },
+    });
+    await client.createBranch("edits", fake.head("main"));
+    const behind = fake.head("edits");
+    await fake.commitAs("main", { "index.html": fake.fileAt("main", "index.html").replace("Pick whatever", "Pick anything") });
+    fail = true;
+    const loaded = await flow.load({ autoUpdate: true });
+    assert.equal(fail, false, `${failure}: the fast-forward was tried`);
+    assert.equal(fake.head("edits"), failure === "refused" ? behind : fake.head("main"), `${failure}: edits as GitHub left it`);
+    assert.equal(loaded.onBranch, false);
+    assert.equal(loaded.head, fake.head("main"), "the tab loads main");
+    assert.equal(flow.state.files.get("index.html"), await gitBlobSha(fake.fileAt("main", "index.html")));
+
+    // Saving a page main changed is no conflict: the save starts from main's head.
+    const saved = await flow.save([await change("index.html", "Pick anything", "Pick something", loaded.files.get("index.html"), fake)], "one");
+    assert.equal(fake.head("edits"), saved.sha, "edits moved up from where it was to the save");
+    assert.deepEqual(fake.commit(saved.sha).parents, [fake.head("main")]);
+    assert.equal(countRequests(fake, "DELETE", /./), 0);
+  }
+});
+
+test("a merge whose fast-forward of edits is refused for another reason still merges, and keeps edits for the next load", async () => {
+  let refuse = false;
+  const { fake, flow } = await setup({
+    wrapFetch: (fetch) => async (url, init = {}) => {
+      if (refuse && init.method === "PATCH" && String(url).endsWith("/git/refs/heads/edits")) {
+        refuse = false;
+        return new Response(JSON.stringify({ message: "Resource not accessible by integration" }), { status: 403, headers: { "Content-Type": "application/json" } });
+      }
+      return fetch(url, init);
+    },
+  });
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking twice", loaded.files.get("physics.html"), fake)], "one");
+  await flow.publish();
+  assert.equal(await untilSettled(flow), "publishable");
+  const merged = fake.head("edits");
+  refuse = true;
+  const result = await flow.merge();
+  assert.equal(result.merged, true);
+  assert.equal(result.newerSaves, false, "a refusal that isn't a newer save says so");
+  assert.equal(fake.head("edits"), merged, "edits is as it was");
+  assert.equal(flow.state.onBranch, false);
+  assert.match(flow.state.notice, /^Merged\. /);
+  await flow.load();
+  assert.equal(fake.head("edits"), fake.head("main"), "the next load moves it up");
+  assert.equal(countRequests(fake, "DELETE", /./), 0);
 });
 
 test("summariseChecks takes each check's latest run and ignores others", () => {

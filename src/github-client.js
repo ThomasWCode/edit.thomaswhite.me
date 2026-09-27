@@ -6,7 +6,7 @@
 // Files are read as blobs by SHA from the tree of the commit the editor loaded,
 // so the bytes always match the SHA recorded for stale-file detection. Saves go
 // through the Git Data API: one tree and one commit for every changed file, then
-// a fast-forward-only update of the branch.
+// a fast-forward-only update of the branch. No branch is ever deleted or forced.
 
 const API = "https://api.github.com";
 // The runs that publish a site: GitHub Pages' automatic build, and the live
@@ -170,9 +170,14 @@ export function createGitHubClient({ target, fetch, getAccessToken, now = () => 
       const commit = await json("POST", `${repo}/git/commits`, {
         body: { message, tree: tree.sha, parents: [parentSha] },
       });
-      await json("PATCH", `${repo}/git/refs/heads/${encodePath(branch)}`, { body: { sha: commit.sha, force: false } });
+      await client.updateRef(branch, commit.sha);
       return { sha: commit.sha, treeSha: tree.sha };
     },
+
+    // Moves `branch` to `sha` as a fast-forward only, never a force: GitHub
+    // refuses (code "not_fast_forward") when the branch holds a commit `sha`
+    // lacks, as when a save landed on it meanwhile.
+    updateRef: (branch, sha) => json("PATCH", `${repo}/git/refs/heads/${encodePath(branch)}`, { body: { sha, force: false } }),
 
     compare: (base, head) => json("GET", `${repo}/compare/${encodePath(base)}...${encodePath(head)}`),
 
@@ -238,10 +243,6 @@ export function createGitHubClient({ target, fetch, getAccessToken, now = () => 
     async mergeBranch(base, head, message) {
       const response = await request("POST", `${repo}/merges`, { body: { base, head, commit_message: message }, allow: [204] });
       return response.status === 204 ? null : (await response.json()).sha;
-    },
-
-    async deleteBranch(branch) {
-      await request("DELETE", `${repo}/git/refs/heads/${encodePath(branch)}`, { allow: [404, 422] });
     },
   };
   return client;
