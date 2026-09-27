@@ -52,6 +52,15 @@ Added with drafts:
 
 9. Try **Drafts** on a change you want anyway (a test change would sit on `edits` with your unpublished edits). Turn the toggle on and change a word: a dashed new version appears after the live text, which dims. Save, and the commit on `edits` adds the new version beside the live one. new.thomaswhite.me shows drafts, so once published there the new version stands in for the live one; thomaswhite.me will leave it out after the content-strategy merge. **Publish new version** in the panel, then Save, turns it into the plain edit.
 
+Added with the data-safety fixes (27 September, `docs/audits/2026-09-27-merge-safety.md`). They were tested only against the fake GitHub, and only in Chromium, so these are still to do:
+
+10. On a machine with Firefox and WebKit (`npx playwright install firefox webkit`), run `npm run test:e2e:all`. The fixes change how a block and the Markdown box are finished, and the Publish dialog.
+11. Once the Workflows permission is granted and the fixes are merged, open the editor with nothing unsaved. The preview repository's `edits` (8 saves, behind `main` since 26 September) should get `main` merged in, which finding 11 left unverified. After the next Publish, `edits` should still exist, at the merge commit, and the editor should show nothing to publish.
+12. Merge one of the editor's pull requests on GitHub itself, with a merge commit. The next load should move `edits` up to `main` and show nothing to publish.
+13. With Drafts on, save a new version of a paragraph, then have a Claude session change another word of the live paragraph on `edits`. **Publish new version** should refuse, and show the paragraph as it was (looked up in the file's history on GitHub), as it is now, and the new version. Carry the change over, press **Record the live version**, then publish it.
+14. On GitHub, add a line below the list in an open pull request's description, and change its title. Both should survive the next Save, and **Update title and description** with nothing changed in the dialog.
+15. Have a Claude session rename a blog source that has unsaved edits in the editor. After **Reload those files**, the edits should be under **No longer on GitHub**, and no Save should recreate the file.
+
 ### Tidy-up
 
 - Delete the App's unused private key: App settings → Private keys → Delete. The editor never uses it (no installation tokens), and an unused key is only a liability. The downloaded `.pem` was moved to `C:\Users\thoma\.secrets`; delete that copy too.
