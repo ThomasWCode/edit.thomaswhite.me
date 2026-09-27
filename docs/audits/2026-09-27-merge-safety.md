@@ -8,7 +8,7 @@ The audit itself fixed nothing. Nothing was written to `main` or `edits` in any 
 
 How each finding is to be fixed was decided on 27 September: see [Decisions and fix plan](#decisions-and-fix-plan), and the decision at the end of each finding.
 
-**Fixed, 27 September.** Every decision is implemented on the branch `claude/editor-data-safety-fixes-xe1fd6` of this repository and of `ThomasWCode/ThomasWCode.github.io-revised`, in pull requests not yet merged. Each finding was reproduced on `main` first; each fix is its own commit, with its regression tests, and the other docs were updated with them (see [Docs to update with the fixes](#docs-to-update-with-the-fixes)). The Status column below and the **Fixed** paragraph at the end of each finding give the commits and what changed; the evidence is kept as found. Two settings are still Tom's to change, outside the code: findings 4 and 11. `ThomasWCode/ThomasWCode.github.io` was not touched; it gets the site's changes through the content-strategy merge.
+**Fixed, 27 September.** Every decision is implemented on the branch `claude/editor-data-safety-fixes-xe1fd6` of this repository and of `ThomasWCode/ThomasWCode.github.io-revised`, in pull requests #5 here and #37 there. Each finding was reproduced on `main` first; each fix is its own commit, with its regression tests, and the other docs were updated with them (see [Docs to update with the fixes](#docs-to-update-with-the-fixes)). The Status column below and the **Fixed** paragraph at the end of each finding give the commits and what changed; the evidence is kept as found. Two settings are still Tom's to change, outside the code: findings 4 and 11. `ThomasWCode/ThomasWCode.github.io` was not touched; it gets the site's changes through the content-strategy merge.
 
 ## Scope and method
 
@@ -493,19 +493,24 @@ The risk accepted: a stolen editor sign-in could then change the site's workflow
 
 ### After the fixes (27 September)
 
-- **Editor:** lint clean; 177 of 177 unit tests pass (Node 24.21.0); 31 of 31 browser journeys pass in Chromium (build 1194 through `executablePath`, as before), in two full runs. In a third, "a placeholder still asks before Done after an item is added above it" failed once under load, the toolbar flake noted above; it passed 8 times of 8 on its own, on this branch and on `main`. Firefox and WebKit were not run.
+- **Editor:** lint clean; 177 of 177 unit tests pass (Node 24.21.0); 31 of 31 browser journeys pass in Chromium (build 1194 through `executablePath`, as before), in two full runs. In a third, "a placeholder still asks before Done after an item is added above it" failed once under load, the toolbar flake noted above; it passed 8 times of 8 on its own, on this branch and on `main`. Firefox and WebKit were not run here.
 - **Site:** lint clean; 98 of 98 static tests pass. Its browser, visual and Lighthouse suites were not run locally; its CI runs them on the pull request.
 - **Scripts:** `drafts-attribute-value` and `live-equivalence` report safe against the fixed site; `squash-revert` still exits 1, by design.
 - **In CI** on the pull requests: the editor's suite, and the site's browser, visual and Lighthouse suites, all passed.
+- **On Windows 11**, Tom's machine (27 September, Node 24.18.0), what this sandbox couldn't run:
+  - `npm run test:e2e:all`: 93 of 93, the 31 journeys in each of Chromium, Firefox and WebKit, at the first attempt.
+  - Lint clean and 177 of 177 unit tests here too. `live-equivalence`: 925 comparisons, no difference; `drafts-attribute-value`: every element live.
+  - `squash-revert` still exits 1, by design. Its scratch repository now sets `core.autocrlf=false`: with Windows' default CRLF checkouts every line it read back ended in `\r`, so it would have reported the change back even had the revert held.
+  - The site's static tests: 98 of 98 with LF files. In a CRLF checkout three redirect-page tests fail, on `main` too: they compare the front matter with `\n` endings. Not part of these fixes.
+  - The live `edits` branch, merged locally (never pushed) with the site's `main` plus #37, as the editor's next load will merge it: clean, the 6 pages byte for byte as on `edits`, and 98 of 98 static tests.
 - **Still to run, later** (not possible here):
-  - Firefox and WebKit, with `npm run test:e2e:all`. This sandbox has only Chromium.
   - The fixes against the real GitHub. Only the fake GitHub saw them, because the editor wasn't run against the live repositories:
     - `edits` moved up on load and after a merge, with and without the Workflows permission;
     - the file-history lookup of a changed new version;
     - the pull request's text kept;
     - a file renamed upstream.
 
-    `docs/setup.md` lists them as live checks 10 to 15.
+    `docs/setup.md` lists them as live checks 11 to 15.
   - In the site: the content review's first real run, and §6 step 6's commands at the merge (its note's "Still to test").
 
 ## Reproducing
