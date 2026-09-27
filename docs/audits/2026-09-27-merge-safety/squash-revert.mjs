@@ -11,7 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "squash-audit-"));
-const git = (...args) => execFileSync("git", ["-C", dir, "-c", "user.name=audit", "-c", "user.email=audit@example.invalid", ...args], { encoding: "utf8" });
+// core.autocrlf=false: files are checked out as written, whatever the machine's
+// git config. With Windows' default CRLF checkouts every line read back ended
+// in "\r", and the revert looked lost even when it held.
+const git = (...args) => execFileSync("git", ["-C", dir, "-c", "core.autocrlf=false", "-c", "user.name=audit", "-c", "user.email=audit@example.invalid", ...args], { encoding: "utf8" });
 const page = join(dir, "page.html");
 const line = () => readFileSync(page, "utf8").split("\n")[1];
 try {
