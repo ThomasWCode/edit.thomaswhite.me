@@ -1177,7 +1177,9 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     }
     await runFlow(async () => {
       await flow.updateFromMain();
+      const brought = flow.state.notice;
       await reload();
+      if (brought) toast(brought, "success");
     });
   }
 
@@ -1273,7 +1275,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
       actions.push(button("Update title and description", () => runFlow(() => flow.updatePullRequest(publishWords())), { disabled: busy }));
     }
     if (pr) actions.push(button("Refresh", () => runFlow(() => flow.refreshChecks()), { disabled: busy }));
-    if (pr && state.behindBy > 0) actions.push(button("Update from main", updateFromMain, { disabled: busy }));
+    if (state.onBranch && state.behindBy > 0) actions.push(button("Update from main", updateFromMain, { disabled: busy }));
     if (state.canRefreshScreenshots) actions.push(button("Refresh screenshots", () => runFlow(() => flow.refreshScreenshots()), { disabled: busy }));
     if (pr && state.canStartChecks && state.phase === "checking") actions.push(button("Start checks", () => runFlow(() => flow.startChecks()), { disabled: busy }));
     if (pr) actions.push(button("Merge", () => runFlow(() => flow.merge()), { kind: "primary", disabled: busy || state.phase !== "publishable" }));
@@ -1310,6 +1312,13 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
           "div",
           { class: "dialog-body" },
           summary,
+          state.onBranch && state.behindBy > 0
+            ? h(
+                "p",
+                { class: "small" },
+                `main has ${state.behindBy} newer ${state.behindBy === 1 ? "commit" : "commits"} than your saved edits. Update from main brings ${state.behindBy === 1 ? "it" : "them"} in${pr ? ", and the checks run again" : ""}.`,
+              )
+            : null,
           state.notice ? h("p", { class: `notice${state.phase === "attention" ? " notice--warning" : ""}`, role: "status" }, state.notice) : null,
           state.error ? h("p", { class: "notice notice--error", role: "alert" }, describeError(state.error, target)) : null,
           words,
@@ -1327,9 +1336,14 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
 
   // ---- Reload ------------------------------------------------------------------------
 
+  // Unsaved work lives in sessionStorage (typing, kept-aside edits, new
+  // files); with none, main's newer changes can be brought into saved edits
+  // before the pages load.
+  const nothingUnsaved = () => store.paths().length === 0 && !dirtyEntries().length;
+
   async function reload() {
     try {
-      const { files } = await flow.load();
+      const { files } = await flow.load({ autoUpdate: nothingUnsaved() });
       syncEntries(files);
       renderFileList();
       await open(currentPath && entries.has(currentPath) ? currentPath : firstPagePath());
@@ -1430,7 +1444,10 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
         : state.phase === "attention"
           ? `Pull request #${state.pr.number}: ${state.notice}`
           : `Pull request #${state.pr.number}: checks running (${done} of ${target.requiredChecks.length} done).`;
-    } else if (state.aheadBy > 0) status = `Saved on edits: ${state.changedPaths.length} ${state.changedPaths.length === 1 ? "file differs" : "files differ"} from main. Publish when ready.`;
+    } else if (state.aheadBy > 0) {
+      const behind = state.behindBy > 0 && !state.notice ? " main has moved on since: Update from main is in Publish." : "";
+      status = `${state.notice ? `${state.notice} ` : ""}Saved on edits: ${state.changedPaths.length} ${state.changedPaths.length === 1 ? "file differs" : "files differ"} from main. Publish when ready.${behind}`;
+    }
     else status = state.notice || `Editing ${target.owner}/${target.repo}.`;
     if (draftMode && !state.busy) status = `Drafts on: changes are kept off thomaswhite.me until you publish them. ${status}`;
     setStatus(status);
@@ -1917,7 +1934,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     setStatus("Loading the site from GitHub…");
     stageMessage(`Loading ${target.owner}/${target.repo}…`);
     try {
-      const { files } = await flow.load();
+      const { files } = await flow.load({ autoUpdate: nothingUnsaved() });
       syncEntries(files);
       renderFileList();
       let remembered = null;

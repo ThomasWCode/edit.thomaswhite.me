@@ -72,6 +72,10 @@ export async function createMockSession({ target }) {
         await fake.commitAs(branch, { [entry.path]: `${fake.fileAt(branch, entry.path)}<!-- edited elsewhere -->\n` });
         say(`${entry.path} changed on ${branch}: saving it now is a conflict.`);
       }, { small: true }),
+      button("Main moves on", async () => {
+        await fake.commitAs("main", { "docs/record.md": `${fake.fileAt("main", "docs/record.md")}\nA change merged elsewhere.\n` });
+        say(fake.head("edits") ? "main has a newer commit: saved edits catch up on the next load, or with Update from main in Publish." : "main has a newer commit.");
+      }, { small: true }),
       button("Next CI: browser job fails", () => {
         fake.settings.conclusions["Browser and visual tests"] = "failure";
         say("CI runs started from now fail the browser job.");

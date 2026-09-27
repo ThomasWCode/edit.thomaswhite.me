@@ -338,6 +338,40 @@ test("drafts: whole paragraphs and chosen words kept off the live site, and × m
   expect(saved).toMatch(/<li data-draft="new">\s*<span class="compact-list-label">/);
 });
 
+test("saved edits catch up with main when the editor opens, and Update from main works before publishing", async ({ page }) => {
+  const fake = await createFake();
+  await openEditor(page, fake);
+  await typeAtEnd(page, frame(page).locator("p", { hasText: "Pick whatever sounds a bit interesting." }), " Saved.");
+  await page.keyboard.press("Enter");
+  await save(page);
+  const saved = fake.head("edits");
+
+  // main moves on elsewhere; reopened with nothing unsaved, the editor brings it in.
+  await fake.commitAs("main", { "docs/record.md": `${fake.fileAt("main", "docs/record.md")}\nMerged elsewhere.\n` });
+  await page.reload();
+  await expect(page.locator("#status-line")).toContainText("Brought main's 1 newer commit into your saved edits");
+  expect(fake.commit(fake.head("edits")).parents).toEqual([saved, fake.head("main")]);
+  await expect(frame(page).locator("p", { hasText: "Pick whatever" })).toHaveText("Pick whatever sounds a bit interesting. Saved.");
+
+  // With unsaved typing, loading leaves edits alone; once saved, Publish offers the update.
+  await fake.commitAs("main", { "docs/record.md": `${fake.fileAt("main", "docs/record.md")}\nAgain.\n` });
+  await typeAtEnd(page, frame(page).locator("p", { hasText: "Anything big, small" }), " Unsaved.");
+  await page.keyboard.press("Enter");
+  await page.reload();
+  await expect(page.locator("#save-button")).toHaveText("Save (1)");
+  await save(page);
+  expect(fake.commit(fake.head("edits")).parents).toHaveLength(1);
+  await page.locator("#publish-button").click();
+  const publish = page.locator("#publish-dialog");
+  await expect(publish).toContainText("main has 1 newer commit than your saved edits");
+  await publish.getByRole("button", { name: "Update from main" }).click();
+  await expect(page.locator("#toast")).toContainText("Brought in main's changes");
+  expect(fake.commit(fake.head("edits")).parents).toHaveLength(2);
+  expect(fake.fileAt("edits", "docs/record.md")).toContain("Again.");
+  // Only main's own pushes ran the site's checks: nothing ran for edits.
+  expect(fake.checkRuns().filter((run) => run.event !== "push")).toHaveLength(0);
+});
+
 test("a baseline bot commit does not block a save; another device's edit to the page does", async ({ page }) => {
   const fake = await createFake();
   await openEditor(page, fake);
