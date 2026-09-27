@@ -846,6 +846,9 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     renderTopbar();
   }
 
+  // The Markdown box into its file, and into sessionStorage at once: typing
+  // otherwise reaches it only after a pause (the box's input handler).
+  let markdownTimer = null;
   function syncMarkdown() {
     const entry = current();
     if (!entry || entry.kind !== "markdown" || entry.status !== "ready") return;
@@ -853,8 +856,9 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     if (value !== entry.working) {
       pushUndo(entry);
       entry.working = value;
-      persist(entry);
     }
+    clearTimeout(markdownTimer);
+    persist(entry);
   }
 
   // ---- Checks and Save -------------------------------------------------------------
@@ -1474,7 +1478,12 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   const nothingUnsaved = () => !typing && store.paths().length === 0 && !dirtyEntries().length;
 
   // True once the files are reloaded; a failure is reported and false returned.
+  // The block being typed in, and the Markdown box, are finished first, so
+  // every word reaches the file it was typed in, and is kept aside with it if
+  // that file changed on GitHub.
   async function reload() {
+    preview.finishEditing();
+    syncMarkdown();
     try {
       const { files } = await flow.load({ autoUpdate: nothingUnsaved() });
       syncEntries(files);
@@ -2086,7 +2095,6 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
       };
     }
     const editor = $("markdown-editor");
-    let markdownTimer = null;
     editor.oninput = () => {
       const entry = current();
       if (!entry || entry.kind !== "markdown" || entry.status !== "ready") return;
