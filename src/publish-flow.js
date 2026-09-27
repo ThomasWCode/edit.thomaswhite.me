@@ -168,8 +168,9 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
     } catch (error) {
       if (!(error instanceof GitHubError) || error.code !== "conflict") throw error;
       const both = await filesBothChanged();
+      // Publishing wouldn't help: the pull request would clash the same way.
       throw new MainClashError(
-        `${target.base} has changed ${both.length ? both.join(", ") : "the same lines"} too, so its changes can't be brought in automatically. Publish your saved edits first, or ask for it in a Claude session.`,
+        `${target.base} has changed ${both.length ? both.join(", ") : "the same lines"} too, so its changes can't be brought in automatically, and publishing would clash the same way. Ask a Claude session to resolve it on ${target.branch}; your saved edits stay as they are until then.`,
       );
     }
   }
@@ -246,13 +247,19 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
           branchHead = null;
         } else if (comparison.behind_by > 0 && autoUpdate) {
           const count = `${comparison.behind_by} newer ${comparison.behind_by === 1 ? "commit" : "commits"}`;
+          const brought = `Brought ${target.base}'s ${count} into your saved edits, so you're editing the site as it is now.`;
           try {
             branchHead = await mergeMainIn();
-            notice = `Brought ${target.base}'s ${count} into your saved edits, so you're editing the site as it is now.`;
+            notice = brought;
           } catch (error) {
             if (error instanceof MainClashError) notice = error.message;
             else if (error instanceof GitHubError && error.code !== "unauthorized") {
-              notice = `${target.base} has ${count} that couldn't be brought in just now: Update from main in Publish tries again.`;
+              // The merge may have landed with its answer lost: load edits as it is now.
+              const now = await client.getRef(target.branch);
+              if (now && now !== branchHead) {
+                branchHead = now;
+                notice = brought;
+              } else notice = `${target.base} has ${count} that couldn't be brought in just now: Update from main in Publish tries again.`;
             } else throw error;
           }
         }
@@ -289,21 +296,23 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
           const baseHead = await client.getRef(target.base);
           head = await client.createBranch(target.branch, baseHead);
         }
-        let pending = changes;
-        if (head !== state.head) {
-          ({ files: tree } = await client.getCommitTree(head));
-          const conflicts = [];
-          pending = [];
-          for (const change of changes) {
-            const current = tree.get(change.path) ?? null;
-            if (current === newShas.get(change.path)) continue;
-            if (current !== (change.loadedSha ?? null)) conflicts.push(change.path);
-            else pending.push(change);
-          }
-          if (conflicts.length) {
-            set({ phase: state.pr ? "checking" : "ready" });
-            throw new SaveConflictError(conflicts, head);
-          }
+        // Each change is judged against the head's own tree when edits moved,
+        // else against the tree held for it. A change made to another version
+        // of its file than that (a tab whose reload failed after main was
+        // brought in, say) is a conflict either way, never an overwrite.
+        if (head !== state.head) ({ files: tree } = await client.getCommitTree(head));
+        const judged = tree || state.files;
+        const conflicts = [];
+        const pending = [];
+        for (const change of changes) {
+          const current = judged.get(change.path) ?? null;
+          if (current === newShas.get(change.path)) continue;
+          if (current !== (change.loadedSha ?? null)) conflicts.push(change.path);
+          else pending.push(change);
+        }
+        if (conflicts.length) {
+          set({ phase: state.pr ? "checking" : "ready" });
+          throw new SaveConflictError(conflicts, head);
         }
         if (!pending.length) {
           sha = head;

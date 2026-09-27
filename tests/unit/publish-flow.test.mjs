@@ -299,6 +299,44 @@ test("a clash with main leaves edits as it was and names the files both changed"
   await assert.rejects(flow.updateFromMain(), /main has changed index\.html too/, "the button says the same");
 });
 
+test("a merge that lands with its answer lost is loaded, not missed", async () => {
+  let loseAnswer = false;
+  const { fake, flow } = await setup({
+    wrapFetch: (fetch) => async (url, init = {}) => {
+      const response = await fetch(url, init);
+      if (loseAnswer && init.method === "POST" && String(url).endsWith("/merges")) {
+        loseAnswer = false;
+        throw new TypeError("Failed to fetch");
+      }
+      return response;
+    },
+  });
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking more", loaded.files.get("physics.html"), fake)], "one");
+  await fake.commitAs("main", { "index.html": fake.fileAt("main", "index.html").replace("Pick whatever", "Pick anything") });
+  loseAnswer = true;
+  await flow.load({ autoUpdate: true });
+  assert.equal(fake.commit(fake.head("edits")).parents.length, 2, "GitHub did merge");
+  assert.equal(flow.state.head, fake.head("edits"), "and the flow holds the merged head");
+  assert.equal(flow.state.files.get("index.html"), await gitBlobSha(fake.fileAt("main", "index.html")));
+  assert.equal(flow.state.behindBy, 0);
+  assert.match(flow.state.notice, /Brought main's 1 newer commit/);
+});
+
+test("a save made to an older version of a file than the flow holds is a conflict, even when edits hasn't moved", async () => {
+  const { fake, flow } = await setup();
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking more", loaded.files.get("physics.html"), fake)], "one");
+  await fake.commitAs("main", { "index.html": fake.fileAt("main", "index.html").replace("Pick whatever", "Pick anything") });
+  await flow.load();
+  const oldIndex = flow.state.files.get("index.html");
+  await flow.updateFromMain();
+  // The tab's reload failed: its Home page still comes from the old blob.
+  const stale = { path: "index.html", text: readFixture("index.html").replace("Pick whatever", "Pick nothing"), loadedSha: oldIndex };
+  await assert.rejects(flow.save([stale], "stale"), SaveConflictError, "never an overwrite of main's change");
+  assert.match(fake.fileAt("edits", "index.html"), /Pick anything/);
+});
+
 test("Update from main without a pull request merges at once, and nothing runs", async () => {
   const { fake, flow } = await setup();
   const loaded = await flow.load();
