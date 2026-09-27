@@ -222,6 +222,14 @@ export function createGitHubClient({ target, fetch, getAccessToken, now = () => 
     updateBranch: (number, expectedHeadSha) =>
       json("PUT", `${repo}/pulls/${number}/update-branch`, { body: { expected_head_sha: expectedHeadSha } }),
 
+    // Merges `head` into the branch `base` on GitHub, with no pull request: a
+    // merge commit on `base`, made at once. Returns its SHA, or null when `base`
+    // has everything already; both changing the same lines throws "conflict".
+    async mergeBranch(base, head, message) {
+      const response = await request("POST", `${repo}/merges`, { body: { base, head, commit_message: message }, allow: [204] });
+      return response.status === 204 ? null : (await response.json()).sha;
+    },
+
     async deleteBranch(branch) {
       await request("DELETE", `${repo}/git/refs/heads/${encodePath(branch)}`, { allow: [404, 422] });
     },

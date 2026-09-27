@@ -220,6 +220,20 @@ test("pull request, checks, workflow and merge calls use the target's branch nam
   assert.deepEqual(calls[5].body, { merge_method: "merge", sha: "head" });
 });
 
+test("mergeBranch merges one branch into another with no pull request", async () => {
+  const { client, calls } = setup([
+    json(201, { sha: "merge-commit" }),
+    new Response(null, { status: 204 }),
+    json(409, { message: "Merge conflict" }),
+  ]);
+  assert.equal(await client.mergeBranch("edits", "main", "Merge main into edits"), "merge-commit");
+  assert.equal(calls[0].method, "POST");
+  assert.equal(calls[0].url, `${REPO}/merges`);
+  assert.deepEqual(calls[0].body, { base: "edits", head: "main", commit_message: "Merge main into edits" });
+  assert.equal(await client.mergeBranch("edits", "main", "again"), null, "edits has main's changes already");
+  await assert.rejects(client.mergeBranch("edits", "main", "clash"), (error) => error instanceof GitHubError && error.code === "conflict");
+});
+
 test("gitBlobSha matches git hash-object", async () => {
   assert.equal(await gitBlobSha(""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
   assert.equal(await gitBlobSha("hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a");
