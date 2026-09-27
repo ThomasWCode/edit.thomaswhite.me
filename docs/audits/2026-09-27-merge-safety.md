@@ -29,13 +29,13 @@ How each finding is to be fixed was decided on 27 September: see [Decisions and 
 | 2 | High | Publishing a waiting `replace` draft undoes a change merged from `main` into its live element | Reproduced: 94 of 128 cases; **fixed**: `5795664`, site `205ca31` |
 | 3 | Medium | Unsaved edits to a file renamed or deleted on GitHub disappear after "Reload those files" | Reproduced in Chromium; **fixed**: `821aa34` |
 | 4 | Medium, conditional | A squash or rebase merge on GitHub, then a revert on `main`: the auto-merge brings the reverted change back | Reproduced with git; **docs fixed**: `ae05bf7`, site `1c83c80`; the setting is still Tom's to change |
-| 5 | Low | The documented branch-delete race is wider than documented; the lost save was reported "Saved" | Reproduced against the fake; **fixed**: `78d32dc` |
+| 5 | Low | The documented branch-delete race is wider than documented; the lost save was reported "Saved" | Reproduced against the fake; **fixed**: `78d32dc`, `6f6b4d1` |
 | 6 | Low, latent | The live build strips any element whose attribute *value* mentions `data-draft` | Reproduced; nothing triggers it today; **fixed**: site `5c1377f` |
 | 7 | Low | Pull request text below the generated list, and title or note changes made on GitHub, are overwritten | From the code, then reproduced against the fake; **fixed**: `074c462` |
-| 8 | Low | The monthly content review overwrites the open review issue's body, ticked boxes included | From the workflow, then reproduced with a stub `gh`; **fixed**: site `a6e25cd` |
+| 8 | Low | The monthly content review overwrites the open review issue's body, ticked boxes included | From the workflow, then reproduced with a stub `gh`; **fixed**: site `a6e25cd`, `7d382cf` |
 | 9 | Low | A reload while a block is being typed can drop up to 0.8 s of typing | From the code, then reproduced in Chromium; **fixed**: `4758c65` |
 | 10 | Medium, process | Content-strategy merge: nothing enforces the no-save window; step 6 silently changes the preview's `CNAME` | From the procedure and git; **fixed** (docs, as decided): site `2a86b4e` |
-| 11 | Unverified | GitHub may refuse the auto-merge on today's `edits`, which lacks `main`'s new workflow file (no data loss either way) | Unverified; **docs fixed**: `ae05bf7`, site `2a86b4e`; the permission is still Tom's to grant |
+| 11 | Unverified | GitHub may refuse the auto-merge on today's `edits`, which lacks `main`'s new workflow file (no data loss either way) | Unverified; **docs fixed**: `ae05bf7`, `1bd3729`, site `2a86b4e`, `85ecb2c`; the permission is still Tom's to grant |
 
 Commits without "site" are in this repository; "site" ones in `ThomasWCode/ThomasWCode.github.io-revised`. All are on the branches named above.
 
@@ -297,6 +297,7 @@ The site's `AGENTS.md` "Drafts" does not tell a Claude session that changing L a
 - `deleteBranch` is gone from the client, and `updateRef` is fast-forward only: no path deletes or forces a branch.
 - Tests: `delete-race.mjs` is now `tests/unit/delete-race.test.mjs` (both timings keep the save and load it). The tests that expected `edits` deleted now expect it at `main`, with no `DELETE` sent. New tests cover refused and unanswered fast-forwards, in `load()` and `merge()`, and the editor view (`tests/e2e/edits-kept.spec.mjs`).
 - It depends on finding 11. Until the App holds the Workflows permission, GitHub may refuse to move a trailing `edits` over `main`'s workflow change. Nothing is lost then, but a Save that must move `edits` up fails the same way, its edits staying in the tab.
+- After Codex's review, `6f6b4d1`: a Save retried after its answer was lost, finding everything already on `edits`, left the tab as if there were no `edits` (no title fields in Publish, no Update from main). The tab now counts that save as on `edits`, and takes `onBranch` from the comparison read after every save.
 
 ### 6. The live build strips elements whose attribute values mention `data-draft`
 
@@ -363,6 +364,7 @@ A clarification given with the decision: visible text on a page is always safe. 
 
 - When something is due, the workflow opens a new "Content review: <Month Year>" issue, and only then closes every earlier open review issue with a comment linking it. Their bodies and ticks are never touched. When nothing is due it opens and closes nothing.
 - Checked with the stub under `bash -eo pipefail`: nothing due; one, two or no earlier issues; a failing create, which closes nothing. **Not run** against the live repository.
+- After Codex's review, site `7d382cf`: a second run in the same month opened another issue and closed the one holding that month's ticks. It now leaves that month's issue as it is, and closes only the others. The stub checks were rerun with that case added.
 - `AGENTS.md`, `docs/testing.md` and the site's `docs/implementation-notes.md` §4 say so.
 
 ### 9. A reload while a block is being typed
@@ -444,7 +446,7 @@ The risk accepted: a stolen editor sign-in could then change the site's workflow
 - At the content-strategy merge's step 7, the main repository is added to that same installation, which already carries the permission.
 - Whether GitHub would have refused the merge without it stays unverified. The next editor load with nothing unsaved shows whether the merge of today's `edits` succeeds.
 
-**Docs fixed** in `ae05bf7` and site `2a86b4e`. `docs/setup.md` lists Workflows among the App's permissions, with Tom's steps to grant it; `docs/how-it-works.md`, Security review, gives the risk accepted and what limits it; the site's §6 step 7 adds the main repository to the installation that holds it. **Not done: granting the permission**, which is Tom's; the App's settings can't be read from here. Whether GitHub would refuse without it stays unverified.
+**Docs fixed** in `ae05bf7` and site `2a86b4e`. `docs/setup.md` lists Workflows among the App's permissions, with Tom's steps to grant it; `docs/how-it-works.md`, Security review, gives the risk accepted and what limits it; the site's §6 step 7 adds the main repository to the installation that holds it. **Not done: granting the permission**, which is Tom's; the App's settings can't be read from here. Whether GitHub would refuse without it stays unverified. After Codex's review (site `85ecb2c`; here `1bd3729`, "Switching targets"), step 7 of §6 and step 1 of switching targets first check that the permission is granted and accepted, instead of saying it is.
 
 ## Assumptions of the merge feature
 
@@ -494,6 +496,17 @@ The risk accepted: a stolen editor sign-in could then change the site's workflow
 - **Editor:** lint clean; 177 of 177 unit tests pass (Node 24.21.0); 31 of 31 browser journeys pass in Chromium (build 1194 through `executablePath`, as before), in two full runs. In a third, "a placeholder still asks before Done after an item is added above it" failed once under load, the toolbar flake noted above; it passed 8 times of 8 on its own, on this branch and on `main`. Firefox and WebKit were not run.
 - **Site:** lint clean; 98 of 98 static tests pass. Its browser, visual and Lighthouse suites were not run locally; its CI runs them on the pull request.
 - **Scripts:** `drafts-attribute-value` and `live-equivalence` report safe against the fixed site; `squash-revert` still exits 1, by design.
+- **In CI** on the pull requests: the editor's suite, and the site's browser, visual and Lighthouse suites, all passed.
+- **Still to run, later** (not possible here):
+  - Firefox and WebKit, with `npm run test:e2e:all`. This sandbox has only Chromium.
+  - The fixes against the real GitHub. Only the fake GitHub saw them, because the editor wasn't run against the live repositories:
+    - `edits` moved up on load and after a merge, with and without the Workflows permission;
+    - the file-history lookup of a changed new version;
+    - the pull request's text kept;
+    - a file renamed upstream.
+
+    `docs/setup.md` lists them as live checks 10 to 15.
+  - In the site: the content review's first real run, and §6 step 6's commands at the merge (its note's "Still to test").
 
 ## Reproducing
 
