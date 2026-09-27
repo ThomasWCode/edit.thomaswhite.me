@@ -76,7 +76,7 @@ GitHub → Settings → Applications → Authorized GitHub Apps → Homepage Sit
 ### Working on the editor locally
 
 - `npm ci`, then `npx playwright install chromium` (add `firefox webkit` for `npm run test:e2e:all`).
-- `npm run dev` serves the editor at `http://127.0.0.1:4174/`. Sign-in there uses the deployed Worker, which accepts that origin. `http://127.0.0.1:4174/?mock=1` needs no sign-in: an in-memory GitHub seeded from the test fixtures, with a panel to simulate the bot, another device, failing checks, conflicts and an expired token. Nothing leaves the browser.
+- `npm run dev` serves the editor at `http://127.0.0.1:4174/`. Sign-in there uses the deployed Worker, which accepts that origin. `http://127.0.0.1:4174/?mock=1` needs no sign-in: an in-memory GitHub seeded from the test fixtures, with a panel to simulate the bot, another device, main moving on, failing checks, conflicts and an expired token. Nothing leaves the browser.
 - `npm test` runs lint, the unit tests and the Chromium browser suite. CI runs the same on every pull request (about three Linux minutes).
 
 ### Switching to the main site
