@@ -6,6 +6,8 @@ The question: can the merge feature (bringing `main` into `edits`, pull request 
 
 Nothing was fixed. Nothing was written to `main` or `edits` in any repository; the live repositories were only read.
 
+How each finding is to be fixed was decided on 27 September: see [Decisions and fix plan](#decisions-and-fix-plan), and the decision at the end of each finding. None is implemented yet. The other docs are to be updated when the fixes are (see [Docs to update with the fixes](#docs-to-update-with-the-fixes)).
+
 ## Scope and method
 
 - **Code read in full:** `src/publish-flow.js`, `src/github-client.js`, `src/app.js`, `src/working-store.js`, `src/drafting.js`, `src/structure.js`, `src/markdown-files.js`, `dev/fake-github.js`, the relevant parts of `src/edits.js`, `src/describe.js`, `src/editor.js` and `src/auth.js`.
@@ -31,7 +33,76 @@ Nothing was fixed. Nothing was written to `main` or `edits` in any repository; t
 | 8 | Low | The monthly content review overwrites the open review issue's body, ticked boxes included | From the workflow |
 | 9 | Low | A reload while a block is being typed can drop up to 0.8 s of typing | From the code |
 | 10 | Medium, process | Content-strategy merge: nothing enforces the no-save window; step 6 silently changes the preview's `CNAME` | From the procedure and git |
-| 11 | Unverified | GitHub may refuse the auto-merge on today's `edits`, which lacks `main`'s new workflow file (no data loss either way) | Needs one live check |
+| 11 | Unverified | GitHub may refuse the auto-merge on today's `edits`, which lacks `main`'s new workflow file (no data loss either way) | Unverified; the permission is to be granted |
+
+## Decisions and fix plan
+
+Decided on 27 September. Each finding below ends with its decision and the planned fix.
+
+| # | Decision | Fix goes in |
+| --- | --- | --- |
+| 1 | Typing stays allowed during a Save; anything changed meanwhile stays unsaved, for the next Save | Editor: `src/app.js` |
+| 2 | "Publish new version" is refused when the live element has changed since the draft was made, and both versions are shown; plus a rule for Claude sessions | Editor: `src/drafting.js`, `src/app.js`; site: `scripts/drafts.mjs`, its contracts, `AGENTS.md` |
+| 3 | Unsaved edits to a file no longer on GitHub are kept aside and listed as such, until discarded; the file is never recreated | Editor: `src/app.js` |
+| 4 | Squash and rebase merging are turned off in both site repositories | Repository settings (Tom) |
+| 5 | `edits` is never deleted; it is fast-forwarded to `main` instead | Editor: `src/publish-flow.js`, `src/github-client.js` |
+| 6 | The live build reads attribute names only, never their values | Site: `scripts/drafts.mjs`, `tests/static/drafts.test.mjs` |
+| 7 | All of Tom's text in a pull request's description is kept; the dialog sends only what was changed in it | Editor: `src/describe.js`, `src/publish-flow.js`, `src/app.js` |
+| 8 | A new review issue each month; the previous one is closed with a link to it, its body untouched | Site: `.github/workflows/content-review.yml` |
+| 9 | No decision needed: a reload finishes the block being typed first | Editor: `src/app.js` |
+| 10 | No read-only switch: Tom runs the merge from step 2 to step 7 in one go, and the Claude session running it tells him at step 2 that the editor's changes are no longer read; exact `CNAME` commands for step 6 | Site: `docs/implementation-notes.md` §6, `AGENTS.md` |
+| 11 | The App is granted the Workflows permission | GitHub App settings (Tom) |
+
+### What Tom can change now, without code
+
+- **Finding 4:** in both `ThomasWCode/ThomasWCode.github.io-revised` and `ThomasWCode/ThomasWCode.github.io`, go to Settings → General → Pull Requests. Untick "Allow squash merging" and "Allow rebase merging", and leave "Allow merge commits" ticked.
+- **Finding 11:** GitHub → Settings → Developer settings → GitHub Apps → Homepage Site Editor → Permissions & events → Repository permissions → Workflows: **Read and write** → Save changes.
+  - Then accept the new permission on the installation. GitHub asks for this whenever an App's permissions grow: Settings → Applications → Installed GitHub Apps → Homepage Site Editor.
+  - Then sign in to the editor again.
+
+### Until the fixes land
+
+- **1:** after pressing Save, wait for "Saved" before typing again.
+- **2:** before "Publish new version", check the Save dialog's line hunks for words you didn't change going back to an older wording. No such draft exists today.
+- **3:** before "Reload those files", copy any unsaved text from a file that may have been renamed or deleted elsewhere.
+- **4:** until the setting changes, merge the editor's pull requests on GitHub only with "Create a merge commit".
+- **5:** avoid saving on one device while another is opening the editor or publishing.
+
+### Tests
+
+The audit's scripts become the fixes' regression tests, each asserting the safe outcome:
+
+- `typing-during-save.spec.mjs` and `file-gone-upstream.spec.mjs` move into `tests/e2e/`.
+- `replace-draft-merge.mjs` and `delete-race.mjs` become unit tests in `tests/unit/`.
+- The attribute-value cases join the site's `tests/static/drafts.test.mjs`.
+- `live-equivalence.mjs` must still find no difference after findings 2 and 6 are fixed.
+- `squash-revert.mjs` stays as the explanation only. Finding 4's protection is a repository setting, which a script can't exercise.
+
+### Docs to update with the fixes
+
+Not now: with the implementation.
+
+- **Editor repository:**
+  - `docs/how-it-works.md`: Loading, and Save and Publish (`edits` fast-forwarded, not deleted; typing during a Save); Drafts (the record of the live element, and the refusal); Commit messages and pull requests (text kept above and below the list); Known limits (the delete race goes, the reload fix); Security review (the Workflows permission).
+  - `docs/setup.md`: the App's permissions, now including Workflows; the site repositories allow merge commits only.
+  - `docs/plan.md`: these decisions, as departures from the approved plan.
+  - `AGENTS.md`: the drafts rule, for the new record attribute.
+- **Site repositories** (the preview now, the main one through the content-strategy merge):
+  - `AGENTS.md`, § Drafts: the rule for Claude sessions and the record attribute.
+  - `AGENTS.md`, § Editor: `edits` kept rather than deleted, and merge commits only.
+  - `AGENTS.md`, § Date attributes and the content review: a new issue each month, the previous one closed.
+  - `AGENTS.md`, beside the reminder about the Claude routine: at §6 step 2, tell Tom that the editor's changes are no longer read until step 7.
+  - `docs/implementation-notes.md` §6: steps 2 and 6 (finding 10); step 7 notes that the App now holds the Workflows permission.
+  - `docs/testing.md`, if it lists the drafts tests.
+
+### Order
+
+1. The two settings now.
+2. Then findings 1, 2 and 3 in the editor.
+3. Then 5, 7 and 9 in the editor, and 6 and 8 in the site.
+4. Finding 10 at the merge itself.
+
+## The findings in detail
 
 ### 1. Edits made while a Save is running are discarded
 
@@ -55,11 +126,14 @@ Nothing was fixed. Nothing was written to `main` or `edits` in any repository; t
 - **Record tab:** the line typed during the save is gone from the box, from sessionStorage and from GitHub.
 - **Page:** the paragraph is shown but not counted, not stored, and gone after a reload.
 
-**Direction (not implemented):**
+**Decision:** typing stays allowed during a Save, and nothing typed meanwhile is lost. Locking the editor while saving was turned down.
 
-- After a save, reset only the entries whose `working` still equals the text that was saved. For the others, advance `original` and `loadedSha` and keep them dirty.
-- Rebuild `originalModel` from the saved text.
-- Leave a Markdown box alone if it changed. Or make the preview and textarea read-only while saving.
+**Planned fix:**
+
+- In `doSave`, once `flow.save` returns, compare each saved entry's `working` with the text that was saved.
+  - If they are the same, the entry is reset as now.
+  - If `working` has moved on, `original`, `loadedSha` and `originalModel` advance to the saved text, and `working` stays as it is. The entry stays unsaved and is written to sessionStorage.
+- A Markdown box whose text differs from what was saved is never reset.
 
 ### 2. Publishing a `replace` draft undoes changes merged from `main`
 
@@ -89,11 +163,19 @@ So cutting the wrong element was not observed.
 
 The site's `AGENTS.md` "Drafts" does not tell a Claude session that changing L also means changing L′.
 
-**Direction:**
+**Decision:** stop and show both. "Publish new version" is refused when L has changed since the draft was made, and Tom merges the two by hand. Plus a rule for Claude sessions. Merging the changes in automatically, and a rule alone, were turned down.
 
-- Record in L′ what L was when the draft was made (a hash of L's source, say). Refuse or warn at "Publish new version" when L has changed since, showing the difference.
-- Add a rule to the site's "Drafts" section for Claude sessions.
-- The auto-merge could also name any live element with a waiting version that the merge changed.
+**Planned fix:**
+
+- When a replace draft is made (`asDraft`), L′ records what L was: a short hash of L's source, in an attribute such as `data-draft-of`.
+- "Publish new version" compares L with that record. If L has changed:
+  - Publish is refused.
+  - L as it was, L as it is now, and L′ are shown as word runs.
+  - Tom carries the change into L′ by typing in it, then records L as it is now with one button, after which Publish works again.
+- The site's `scripts/drafts.mjs` and contracts accept the new attribute. It is on the draft copy, which thomaswhite.me leaves out anyway.
+- Publishing removes the attribute along with the marker, and `liveSource()` stays byte-equal to the site's build.
+- Site `AGENTS.md`, § Drafts: a Claude session that changes a live element with a new version waiting (the next element, marked `replace`) makes the same change in the new version. The editor then shows Tom both before publishing.
+- No replace draft exists on `main` or `edits` today, so no older draft lacks the record.
 
 ### 3. Unsaved edits to a file that is no longer on GitHub disappear
 
@@ -112,7 +194,14 @@ The site's `AGENTS.md` "Drafts" does not tell a Claude session that changing L a
 
 **Evidence:** `file-gone-upstream.spec.mjs` fails today: after "Reload those files" no blog source shows the kept-aside edits, and Save reads "Save".
 
-**Direction:** keep stored records for vanished files and show them as kept aside ("no longer on GitHub"), with the text to copy.
+**Decision:** keep them aside and say so. Offering to recreate the file, and warning without keeping anything, were turned down.
+
+**Planned fix:**
+
+- `syncEntries` keeps a stored record whose file is no longer in the tree. It is listed under "No longer on GitHub", with the kept-aside notice, the text to copy and Discard.
+- The editor never saves or recreates that file.
+- The conflict dialog names such files as no longer on GitHub.
+- Once discarded, the record no longer blocks the tab's auto-merge.
 
 ### 4. After a squash or rebase merge, the auto-merge can resurrect a reverted change
 
@@ -125,10 +214,13 @@ The site's `AGENTS.md` "Drafts" does not tell a Claude session that changing L a
 
 **Evidence:** `squash-revert.mjs`: after squash, revert and auto-merge, `edits` again holds the reverted sentence.
 
-**Direction:**
+**Decision:** turn squash and rebase merging off in both site repositories. No code; detecting it in the editor was turned down.
 
-- Turn off squash and rebase merging in both site repositories (Settings → General → Pull Requests).
-- Or have `load()` recognise a merged pull request whose branch isn't an ancestor of `main`, and reset `edits` when its tree adds nothing to `main`'s.
+**Planned fix:**
+
+- Tom changes the setting in both repositories (see [What Tom can change now](#what-tom-can-change-now-without-code)).
+- The docs then state it as a required setting (editor `docs/setup.md`, site `AGENTS.md`).
+- `squash-revert.mjs` keeps exiting 1 afterwards: it simulates the merge methods themselves. It stays as the explanation.
 
 ### 5. The branch-delete race is wider than documented
 
@@ -142,11 +234,16 @@ The site's `AGENTS.md` "Drafts" does not tell a Claude session that changing L a
 
 **Evidence:** `delete-race.mjs`: a second save landing during the pull-request lookup, or during the compare, is gone from every branch in both timings.
 
-**Direction:**
+**Decision:** never delete `edits`; move it forward instead. Re-checking just before deleting, and accepting the race, were turned down.
 
-- Re-read the ref just before deleting in `load()`.
-- Better, never delete: fast-forward `edits` to `main` with `force: false`. A concurrent save makes that update fail instead of being lost, and a branch equal to `main` is harmless.
-- The same works after `merge()`.
+**Planned fix:**
+
+- In `load()`, an `edits` holding nothing `main` lacks is fast-forwarded to `main` (`PATCH /git/refs/heads/edits` with `force: false`) instead of deleted.
+  - GitHub refuses if a save landed meanwhile; `edits` is then loaded as it is.
+- In `merge()`, after the pull request's merge, `edits` is fast-forwarded to the merge commit the same way.
+  - A refusal means newer saves, kept for the next Publish as now.
+- Once created, `edits` stays in both site repositories. Between publishes it equals `main`, or trails it until the next load.
+- Fast-forwarding over a change to a workflow file needs the Workflows permission, since GitHub lists `PATCH /git/refs` under it. Finding 11's decision grants it.
 
 ### 6. The live build strips elements whose attribute values mention `data-draft`
 
@@ -160,10 +257,15 @@ The site's `AGENTS.md` "Drafts" does not tell a Claude session that changing L a
 
 **When:** alt text, a caption, a label or a meta description that mentions the attribute, for example in the "How this site works" post. That includes alt text typed in the editor's image panel.
 
-**Direction:**
+**Decision:** fix the build. Refusing such text, as well or instead, was turned down.
 
-- Match the attribute name only outside quoted values: lex attributes properly, or parse with parse5 in the build.
-- Add a contract case with such a value.
+A clarification given with the decision: visible text on a page is always safe. `<p>An element marked data-draft is left out.</p>` is published normally. Only the text inside a tag's attributes is affected: an image's alt text, a link's label, a hover title. Even there, only "data-draft" in the middle of the text, after a space and before a space or an equals sign, triggers it; as the first or last word it doesn't.
+
+**Planned fix:**
+
+- `scripts/drafts.mjs` reads a start tag's attributes one by one: a name, then an optional quoted or bare value. It looks for `data-draft` among the names only, and does the same for the `remove` marker.
+- The change goes in the preview repository now, and reaches the main one through the content-strategy merge.
+- New cases in `tests/static/drafts.test.mjs`: an alt text, a title and an `aria-label` that mention data-draft mid-text all stay live.
 
 ### 7. Pull request text is overwritten
 
@@ -171,9 +273,25 @@ The site's `AGENTS.md` "Drafts" does not tell a Claude session that changing L a
 - **"Update title and description"** and a Publish onto an already-open pull request send the dialog's title and note as they were when the dialog opened. A title or note changed on GitHub since is overwritten, and an emptied note box sends an empty note.
 - The first point is partly documented ("keeping your note"); the second isn't.
 
+**Decision:** keep all of Tom's text. Fixing only the dialog, and documenting it as it is, were turned down.
+
+**Planned fix:**
+
+- `noteOf` keeps Tom's text above the generated list and below it. `prDescription` puts the text from below back below the list, above the footer.
+- The Publish dialog remembers the title and note it opened with, and sends each only if it was changed there; otherwise the text on GitHub stays.
+  - The same goes for "Update title and description" and for a Publish onto an open pull request.
+
 ### 8. The content review overwrites the open review issue
 
 `.github/workflows/content-review.yml:55-57` finds the first open issue titled "Content review: …" and replaces its title and whole body with the new report. The report is a checklist (`- [ ]`), so boxes ticked on an issue left open are reset each month. Comments are unaffected.
+
+**Decision:** a new issue each month, with the previous one closed. Carrying ticks over, and commenting on the open issue, were turned down.
+
+**Planned fix:**
+
+- When something is due, the workflow opens a new "Content review: <Month Year>" issue.
+- It then closes any earlier open review issue with a comment linking the new one, without touching its body or ticks.
+- When nothing is due, it opens and closes nothing, as now.
 
 ### 9. A reload while a block is being typed
 
@@ -182,6 +300,10 @@ The site's `AGENTS.md` "Drafts" does not tell a Claude session that changing L a
 - Typing older than 0.8 s reaches sessionStorage and is kept aside; the last 0.8 s is lost.
 
 Background triggers: following a pull request merged or closed on GitHub, the reload after Publish, and the reload after Update from main. Low impact.
+
+**Decision:** none needed; the fix has no alternatives worth weighing.
+
+**Planned fix:** `reload()` finishes the block being typed, and syncs the Markdown box, before loading anything. The edit is then committed to the entry it was made on, and if the file changed on GitHub it is kept aside with the rest.
 
 ### 10. Content-strategy merge procedure
 
@@ -194,6 +316,27 @@ Background triggers: following a pull request merged or closed on GitHub, the re
   - the main repository is still at `49b9582`, the fork point, so step 3's `git merge main` is a no-op;
   - the merge overwrites nothing on `main`.
 
+**Decision:** no read-only switch in the editor. Tom will run the merge from step 2 to step 7 in one go, and the Claude session running it must tell him when the editor's changes will no longer be read.
+
+**Planned fix (docs only, at the merge's own update of §6):**
+
+- **Step 2:** the Claude session running the merge tells Tom, once the editor's queue is empty, that from then on changes made in the editor are no longer read. Anything saved there would miss the merge, until step 7 points the editor at the main repository.
+- **Step 6:** the exact commands, which keep the preview's `CNAME`. They were part of both options offered.
+
+  ```bash
+  git switch main
+  git fetch https://github.com/ThomasWCode/ThomasWCode.github.io.git main
+  git merge --no-commit --no-ff FETCH_HEAD
+  git checkout HEAD -- CNAME   # keep the preview's own domain
+  cat CNAME                    # must print new.thomaswhite.me
+  git commit --no-edit
+  git push
+  ```
+
+  `--no-commit` holds the merge open, so `CNAME` is restored before anything is committed. The preview's `main`, which its Pages build reads, never points at a commit with the wrong domain.
+  - The main repository's revert commit still arrives in the history, as an ancestor.
+  - Checked with git on a simulation of both repositories: without the restore, the merge sets `CNAME` to `thomaswhite.me`; with it, the preview keeps `new.thomaswhite.me` and all of `main`'s work.
+
 ### 11. Unverified: GitHub may refuse the auto-merge on today's branch
 
 - The App has no Workflows permission (`docs/setup.md:28`).
@@ -201,7 +344,20 @@ Background triggers: following a pull request merged or closed on GitHub, the re
 - Since today's `edits` branched, `main` has added `.github/workflows/pages.yml`.
 - If GitHub applies the rule to merges, every load and every Update from main fails on this branch: "couldn't be brought in just now", or an error. Nothing is lost, but the feature does nothing until the branch is published.
 - The fake GitHub has no permissions, so the tests can't show it.
-- **Direction:** one live check on a throwaway branch before relying on it.
+
+**Decision:** grant the App the Workflows permission (read and write). Checking live first, and never granting it, were turned down.
+
+The risk accepted: a stolen editor sign-in could then change the site's workflows, which run with the repositories' secrets and publish the site. What still limits it:
+
+- only Tom's account can sign in (the Worker's allowlist);
+- access tokens last eight hours;
+- the editor writes only the files it edits (pages and the Markdown under `docs/`). Workflow changes reach `edits` only through merges of `main`.
+
+**Planned fix:**
+
+- Tom grants the permission and accepts it on the installation (see [What Tom can change now](#what-tom-can-change-now-without-code)).
+- At the content-strategy merge's step 7, the main repository is added to that same installation, which already carries the permission.
+- Whether GitHub would have refused the merge without it stays unverified. The next editor load with nothing unsaved shows whether the merge of today's `edits` succeeds.
 
 ## Assumptions of the merge feature
 
@@ -217,7 +373,7 @@ Background triggers: following a pull request merged or closed on GitHub, the re
 | "Nothing unsaved" gates the auto-merge | True for this tab (typing, dirty entries, stored records); other tabs' unsaved edits then conflict and are kept aside, to be redone by hand | `src/app.js:1343` |
 | `ahead_by == 0` tells when `edits` has been published and can go | True only when pull requests are merged with a merge commit (4); deleting on it is racy (5) | `src/publish-flow.js:245-247` |
 | The editor's view of the live page equals the site's build | True for every kind the editor writes: 925 comparisons, no difference; false for attribute values (6) | `live-equivalence.mjs` |
-| The App can merge branches | Contents write: yes. Workflows: unverified (11) | `docs/setup.md:28` |
+| The App can merge branches | Contents write: yes. Workflows: unverified (11); to be granted | `docs/setup.md:28` |
 
 ## Verified safe
 
