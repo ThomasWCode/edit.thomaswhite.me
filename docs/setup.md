@@ -25,10 +25,20 @@ These are the values from the plan. A private App's settings can't be read throu
 - Homepage URL: `https://edit.thomaswhite.me`.
 - Callback URLs: `https://site-editor-auth.thomaswhite.workers.dev/callback` and `http://127.0.0.1:8787/callback` (for `npm run worker:dev`).
 - Expire user authorization tokens: on. Request user authorization (OAuth) during installation: off. Enable Device Flow: off. Webhook: inactive.
-- Repository permissions: Actions read and write (dispatching the baseline and test workflows), Checks read-only, Contents read and write, Metadata read-only, Pull requests read and write. Nothing else; not Workflows, not Pages.
+- Repository permissions: Actions read and write (dispatching the baseline and test workflows), Checks read-only, Contents read and write, Metadata read-only, Pull requests read and write, Workflows read and write (moving `edits` up to `main` when `main` has changed a workflow file; `how-it-works.md`, "Security review"). Nothing else; not Pages. Workflows was added after the data-safety audit of 27 September: see "Still to do".
 - Where can this GitHub App be installed: only on this account.
 
 ## Still to do
+
+### Two settings from the data-safety audit (27 September)
+
+`docs/audits/2026-09-27-merge-safety.md`, findings 4 and 11. Neither is code.
+
+- **Merge commits only, in both site repositories.** In `ThomasWCode/ThomasWCode.github.io-revised` and `ThomasWCode/ThomasWCode.github.io`: Settings → General → Pull Requests. Untick "Allow squash merging" and "Allow rebase merging", and leave "Allow merge commits" ticked. After a squash or rebase, `edits` still holds commits `main` lacks, and bringing `main` in could undo a later revert on `main`. The editor itself always merges with a merge commit.
+- **The Workflows permission.** GitHub → Settings → Developer settings → GitHub Apps → Homepage Site Editor → Permissions & events → Repository permissions → Workflows: **Read and write** → Save changes.
+  - Then accept the new permission on the installation. GitHub asks for this whenever an App's permissions grow: Settings → Applications → Installed GitHub Apps → Homepage Site Editor.
+  - Then sign in to the editor again.
+  - Without it, GitHub may refuse to move `edits` up to `main` over a change to a workflow file (`main` added `.github/workflows/pages.yml` after today's `edits` branched). Nothing is lost when it does: the editor loads `main` and tries again next time. But a save that has to move `edits` up fails the same way, its edits staying in the tab, until the permission is granted.
 
 ### Live checks (with the session)
 
@@ -81,7 +91,7 @@ GitHub → Settings → Applications → Authorized GitHub Apps → Homepage Sit
 
 ### Switching to the main site
 
-Before the content-strategy merge (the site repository's `docs/implementation-notes.md` §6), publish or discard everything pending in the editor, so nothing is left on the preview repository's `edits`. Drafts may stay in the pages: they merge like any other markup. Just before merging, set the main repository's Settings → Pages → Source to **GitHub Actions** (§6 step 4). Its "Publish the live site" workflow then builds thomaswhite.me with drafts left out; with the old source, drafts would show there. After the merge: install the App on `ThomasWCode/ThomasWCode.github.io`, set `active` to `"main"` in `src/config.js`, publish that change through a pull request, then make a one-word test edit through the editor. Details in [`how-it-works.md`](how-it-works.md), "Switching targets".
+Before the content-strategy merge (the site repository's `docs/implementation-notes.md` §6), publish or discard everything pending in the editor, so the preview repository's `edits` holds nothing `main` lacks (the branch itself stays: the editor never deletes it). Then run §6 steps 2 to 7 in one go: in between, changes made in the editor are no longer read, and the Claude session running the merge says so at step 2. Drafts may stay in the pages: they merge like any other markup. Just before merging, set the main repository's Settings → Pages → Source to **GitHub Actions** (§6 step 4). Its "Publish the live site" workflow then builds thomaswhite.me with drafts left out; with the old source, drafts would show there. After the merge: install the App on `ThomasWCode/ThomasWCode.github.io`, set `active` to `"main"` in `src/config.js`, publish that change through a pull request, then make a one-word test edit through the editor. Details in [`how-it-works.md`](how-it-works.md), "Switching targets".
 
 Around the merge (just before or just after is fine), also add the Claude routine in §6 step 5. It is a scheduled Claude agent on the main repository that reads each batch of new commits, the editor's included, and reports:
 
