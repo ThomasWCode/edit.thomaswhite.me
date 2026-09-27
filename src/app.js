@@ -1178,8 +1178,8 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     await runFlow(async () => {
       await flow.updateFromMain();
       const brought = flow.state.notice;
-      await reload();
-      if (brought) toast(brought, "success");
+      // Only once the pages hold main's changes: a failed reload has said why.
+      if ((await reload()) && brought) toast(brought, "success");
     });
   }
 
@@ -1336,11 +1336,13 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
 
   // ---- Reload ------------------------------------------------------------------------
 
-  // Unsaved work lives in sessionStorage (typing, kept-aside edits, new
-  // files); with none, main's newer changes can be brought into saved edits
-  // before the pages load.
-  const nothingUnsaved = () => store.paths().length === 0 && !dirtyEntries().length;
+  // Unsaved work: a block being typed in (its words reach sessionStorage a
+  // moment later), and what sessionStorage holds (kept-aside edits, new files).
+  // With none, main's newer changes can be brought into saved edits before the
+  // pages load.
+  const nothingUnsaved = () => !typing && store.paths().length === 0 && !dirtyEntries().length;
 
+  // True once the files are reloaded; a failure is reported and false returned.
   async function reload() {
     try {
       const { files } = await flow.load({ autoUpdate: nothingUnsaved() });
@@ -1348,9 +1350,11 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
       renderFileList();
       await open(currentPath && entries.has(currentPath) ? currentPath : firstPagePath());
       prefetchAll().catch(() => {});
+      return true;
     } catch (error) {
       if (error instanceof SignedOutError) onSignedOut(error.message);
       else toast(describeError(error, target), "error");
+      return false;
     }
   }
 
