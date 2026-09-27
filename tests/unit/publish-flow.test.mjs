@@ -507,6 +507,8 @@ test("a save retried after its response was lost does not commit the same change
   assert.equal(saved.sha, head, "the retry recognises the change as saved");
   assert.equal(fake.head("edits"), head);
   assert.equal(fake.requests.filter((request) => request.method === "POST" && request.path === "/git/commits").length, commits, "no second commit");
+  assert.equal(flow.state.onBranch, true, "and the tab knows edits holds it, as after any save");
+  assert.equal(flow.state.aheadBy, 1);
 });
 
 test("a pull request merged or closed on GitHub itself is noticed", async () => {

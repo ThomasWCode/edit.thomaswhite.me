@@ -352,15 +352,21 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
       let sha;
       let parent;
       let committed = false;
+      // Whether edits holds saves main lacks, as far as this save has read.
+      let holds = state.onBranch;
       let tree = null;
       for (let attempt = 1; ; attempt += 1) {
         let head = await client.getRef(target.branch);
         parent = head;
+        holds = state.onBranch;
         tree = null;
         if (!head || !state.onBranch) {
           const baseHead = await client.getRef(target.base);
           if (!head) head = parent = await client.createBranch(target.branch, baseHead);
-          else if (head !== baseHead && (await client.compare(target.base, head)).ahead_by === 0) parent = baseHead;
+          else if (head !== baseHead) {
+            holds = (await client.compare(target.base, head)).ahead_by > 0;
+            if (!holds) parent = baseHead;
+          }
         }
         // Each change is judged against the parent's own tree when it isn't
         // the commit the files were loaded from (edits moved), else against
@@ -406,12 +412,14 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
 
       const files = new Map(tree || state.files);
       for (const [path, blob] of newShas) files.set(path, blob);
-      set({ head: sha, onBranch: state.onBranch || committed, files });
+      // A save found already on edits (its answer lost the first time) is on
+      // it all the same.
+      set({ head: sha, onBranch: committed || holds, files });
       let pr = state.pr;
       let notice;
       try {
-        // Nothing was committed and edits holds nothing main lacks: still as if there were no edits.
-        if (!(await readBranchState()).ahead_by) set({ onBranch: false, aheadBy: 0, behindBy: 0, changedPaths: [] });
+        // edits read again: nothing main lacks is as if there were no edits.
+        set((await readBranchState()).ahead_by ? { onBranch: true } : { onBranch: false, aheadBy: 0, behindBy: 0, changedPaths: [] });
         pr = pr || (await client.findOpenPr());
         if (pr) pr = await refreshPr(await client.getPr(pr.number));
         notice = pr
