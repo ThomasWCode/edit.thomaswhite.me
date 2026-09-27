@@ -8,7 +8,7 @@ The audit itself fixed nothing. Nothing was written to `main` or `edits` in any 
 
 How each finding is to be fixed was decided on 27 September: see [Decisions and fix plan](#decisions-and-fix-plan), and the decision at the end of each finding.
 
-**Fixed, 27 September.** Every decision is implemented on the branch `claude/editor-data-safety-fixes-xe1fd6` of this repository and of `ThomasWCode/ThomasWCode.github.io-revised`, in pull requests #5 here and #37 there. Each finding was reproduced on `main` first; each fix is its own commit, with its regression tests, and the other docs were updated with them (see [Docs to update with the fixes](#docs-to-update-with-the-fixes)). The Status column below and the **Fixed** paragraph at the end of each finding give the commits and what changed; the evidence is kept as found. Two settings are still Tom's to change, outside the code: findings 4 and 11. `ThomasWCode/ThomasWCode.github.io` was not touched; it gets the site's changes through the content-strategy merge.
+**Fixed, 27 September.** Every decision is implemented on the branch `claude/editor-data-safety-fixes-xe1fd6` of this repository and of `ThomasWCode/ThomasWCode.github.io-revised`, in pull requests #5 here and #37 there. Each finding was reproduced on `main` first; each fix is its own commit, with its regression tests, and the other docs were updated with them (see [Docs to update with the fixes](#docs-to-update-with-the-fixes)). The Status column below and the **Fixed** paragraph at the end of each finding give the commits and what changed; the evidence is kept as found. Tom changed the two settings outside the code, findings 4 and 11, the same day. `ThomasWCode/ThomasWCode.github.io` was not touched; it gets the site's changes through the content-strategy merge.
 
 ## Scope and method
 
@@ -28,14 +28,14 @@ How each finding is to be fixed was decided on 27 September: see [Decisions and 
 | 1 | High | Edits made while a Save is still running are silently discarded: a block finished on a page, any typing in the Record and blog-source tabs | Reproduced in Chromium; **fixed**: `0c30b0f` |
 | 2 | High | Publishing a waiting `replace` draft undoes a change merged from `main` into its live element | Reproduced: 94 of 128 cases; **fixed**: `5795664`, site `205ca31` |
 | 3 | Medium | Unsaved edits to a file renamed or deleted on GitHub disappear after "Reload those files" | Reproduced in Chromium; **fixed**: `821aa34` |
-| 4 | Medium, conditional | A squash or rebase merge on GitHub, then a revert on `main`: the auto-merge brings the reverted change back | Reproduced with git; **docs fixed**: `ae05bf7`, site `1c83c80`; the setting is still Tom's to change |
+| 4 | Medium, conditional | A squash or rebase merge on GitHub, then a revert on `main`: the auto-merge brings the reverted change back | Reproduced with git; **docs fixed**: `ae05bf7`, site `1c83c80`; **setting changed** by Tom, 27 September |
 | 5 | Low | The documented branch-delete race is wider than documented; the lost save was reported "Saved" | Reproduced against the fake; **fixed**: `78d32dc`, `6f6b4d1` |
 | 6 | Low, latent | The live build strips any element whose attribute *value* mentions `data-draft` | Reproduced; nothing triggers it today; **fixed**: site `5c1377f` |
 | 7 | Low | Pull request text below the generated list, and title or note changes made on GitHub, are overwritten | From the code, then reproduced against the fake; **fixed**: `074c462` |
 | 8 | Low | The monthly content review overwrites the open review issue's body, ticked boxes included | From the workflow, then reproduced with a stub `gh`; **fixed**: site `a6e25cd`, `7d382cf` |
 | 9 | Low | A reload while a block is being typed can drop up to 0.8 s of typing | From the code, then reproduced in Chromium; **fixed**: `4758c65` |
 | 10 | Medium, process | Content-strategy merge: nothing enforces the no-save window; step 6 silently changes the preview's `CNAME` | From the procedure and git; **fixed** (docs, as decided): site `2a86b4e` |
-| 11 | Unverified | GitHub may refuse the auto-merge on today's `edits`, which lacks `main`'s new workflow file (no data loss either way) | Unverified; **docs fixed**: `ae05bf7`, `1bd3729`, site `2a86b4e`, `85ecb2c`; the permission is still Tom's to grant |
+| 11 | Unverified | GitHub may refuse the auto-merge on today's `edits`, which lacks `main`'s new workflow file (no data loss either way) | Unverified; **docs fixed**: `ae05bf7`, `1bd3729`, site `2a86b4e`, `85ecb2c`; **permission granted** by Tom, 27 September, and the next load's merge succeeded |
 
 Commits without "site" are in this repository; "site" ones in `ThomasWCode/ThomasWCode.github.io-revised`. All are on the branches named above.
 
@@ -59,7 +59,7 @@ Decided on 27 September. Each finding below ends with its decision and the plann
 
 ### What Tom can change now, without code
 
-Still to do after the fixes: read from the API on 27 September, both site repositories still allowed squash and rebase merging. The App's permissions can't be read from here. `docs/setup.md` ("Still to do") carries the same steps.
+**Done** by Tom on 27 September, after the fixes: both site repositories allow merge commits only (read back from the API), and the App holds the Workflows permission, which the editor's next load used to merge `main` into `edits` (`18cfe58`). The steps were:
 
 - **Finding 4:** in both `ThomasWCode/ThomasWCode.github.io-revised` and `ThomasWCode/ThomasWCode.github.io`, go to Settings → General → Pull Requests. Untick "Allow squash merging" and "Allow rebase merging", and leave "Allow merge commits" ticked.
 - **Finding 11:** GitHub → Settings → Developer settings → GitHub Apps → Homepage Site Editor → Permissions & events → Repository permissions → Workflows: **Read and write** → Save changes.
@@ -68,7 +68,7 @@ Still to do after the fixes: read from the API on 27 September, both site reposi
 
 ### Until the fixes land
 
-The fixes are in pull requests. Until they are merged and the editor is redeployed, these still apply; 4 applies until its setting changes.
+The fixes landed on 27 September (#5 here, site #37), the editor was redeployed, and 4's setting changed the same day, so none of these apply any more. They were:
 
 - **1:** after pressing Save, wait for "Saved" before typing again.
 - **2:** before "Publish new version", check the Save dialog's line hunks for words you didn't change going back to an older wording. No such draft exists today.
@@ -263,7 +263,7 @@ The site's `AGENTS.md` "Drafts" does not tell a Claude session that changing L a
 - The docs then state it as a required setting (editor `docs/setup.md`, site `AGENTS.md`).
 - `squash-revert.mjs` keeps exiting 1 afterwards: it simulates the merge methods themselves. It stays as the explanation.
 
-**Docs fixed** in `ae05bf7` (`docs/setup.md`, with Tom's steps, and `docs/how-it-works.md`, Known limits) and site `1c83c80` (`AGENTS.md` § Editor): merge commits only is stated as a required setting. **Not done: the setting itself**, which is Tom's. Read from the API on 27 September, after the fixes, both site repositories still allowed squash and rebase merging. `squash-revert.mjs` still exits 1, by design.
+**Docs fixed** in `ae05bf7` (`docs/setup.md`, with Tom's steps, and `docs/how-it-works.md`, Known limits) and site `1c83c80` (`AGENTS.md` § Editor): merge commits only is stated as a required setting. **The setting: done** by Tom on 27 September; read back from the API, both site repositories allow merge commits only. `squash-revert.mjs` still exits 1, by design.
 
 ### 5. The branch-delete race is wider than documented
 
@@ -296,7 +296,7 @@ The site's `AGENTS.md` "Drafts" does not tell a Claude session that changing L a
 - `merge()` fast-forwards `edits` to the merge commit. A refusal because `edits` moved keeps the newer saves for the next Publish; any other refusal leaves `edits` for the next load.
 - `deleteBranch` is gone from the client, and `updateRef` is fast-forward only: no path deletes or forces a branch.
 - Tests: `delete-race.mjs` is now `tests/unit/delete-race.test.mjs` (both timings keep the save and load it). The tests that expected `edits` deleted now expect it at `main`, with no `DELETE` sent. New tests cover refused and unanswered fast-forwards, in `load()` and `merge()`, and the editor view (`tests/e2e/edits-kept.spec.mjs`).
-- It depends on finding 11. Until the App holds the Workflows permission, GitHub may refuse to move a trailing `edits` over `main`'s workflow change. Nothing is lost then, but a Save that must move `edits` up fails the same way, its edits staying in the tab.
+- It depends on finding 11. Until the App holds the Workflows permission, GitHub may refuse to move a trailing `edits` over `main`'s workflow change. Nothing is lost then, but a Save that must move `edits` up fails the same way, its edits staying in the tab. The permission was granted on 27 September.
 - After Codex's review, `6f6b4d1`: a Save retried after its answer was lost, finding everything already on `edits`, left the tab as if there were no `edits` (no title fields in Publish, no Update from main). The tab now counts that save as on `edits`, and takes `onBranch` from the comparison read after every save.
 
 ### 6. The live build strips elements whose attribute values mention `data-draft`
@@ -446,7 +446,7 @@ The risk accepted: a stolen editor sign-in could then change the site's workflow
 - At the content-strategy merge's step 7, the main repository is added to that same installation, which already carries the permission.
 - Whether GitHub would have refused the merge without it stays unverified. The next editor load with nothing unsaved shows whether the merge of today's `edits` succeeds.
 
-**Docs fixed** in `ae05bf7` and site `2a86b4e`. `docs/setup.md` lists Workflows among the App's permissions, with Tom's steps to grant it; `docs/how-it-works.md`, Security review, gives the risk accepted and what limits it; the site's §6 step 7 adds the main repository to the installation that holds it. **Not done: granting the permission**, which is Tom's; the App's settings can't be read from here. Whether GitHub would refuse without it stays unverified. After Codex's review (site `85ecb2c`; here `1bd3729`, "Switching targets"), step 7 of §6 and step 1 of switching targets first check that the permission is granted and accepted, instead of saying it is.
+**Docs fixed** in `ae05bf7` and site `2a86b4e`. `docs/setup.md` lists Workflows among the App's permissions, with Tom's steps to grant it; `docs/how-it-works.md`, Security review, gives the risk accepted and what limits it; the site's §6 step 7 adds the main repository to the installation that holds it. **Granted** by Tom on 27 September. The editor's next load then merged `main` into the live `edits` (`18cfe58`), over both workflow files it lacked. Whether GitHub would have refused without the permission stays unverified: it was granted first. After Codex's review (site `85ecb2c`; here `1bd3729`, "Switching targets"), step 7 of §6 and step 1 of switching targets first check that the permission is granted and accepted, instead of saying it is.
 
 ## Assumptions of the merge feature
 
@@ -462,7 +462,7 @@ The risk accepted: a stolen editor sign-in could then change the site's workflow
 | "Nothing unsaved" gates the auto-merge | True for this tab (typing, dirty entries, stored records); other tabs' unsaved edits then conflict and are kept aside, to be redone by hand | `src/app.js:1343` |
 | `ahead_by == 0` tells when `edits` has been published and can go | True only when pull requests are merged with a merge commit (4); deleting on it is racy (5) | `src/publish-flow.js:245-247` |
 | The editor's view of the live page equals the site's build | True for every kind the editor writes: 925 comparisons, no difference; false for attribute values (6) | `live-equivalence.mjs` |
-| The App can merge branches | Contents write: yes. Workflows: unverified (11); to be granted | `docs/setup.md:28` |
+| The App can merge branches | Contents write: yes. Workflows: unverified (11); granted on 27 September | `docs/setup.md:28` |
 
 ## Verified safe
 
@@ -482,6 +482,7 @@ The risk accepted: a stolen editor sign-in could then change the site's workflow
 - Simulated with git, that merge is clean. The 6 pages Tom edited come out byte for byte as on `edits`, and the result passes all 96 of the site's static contracts.
 - `main`'s side includes the new `.github/workflows/pages.yml` (finding 11).
 - Both site repositories: merge commits, squash and rebase all allowed; merged branches kept; no open pull requests.
+- Later on 27 September, at 17:05 UTC, with the permission granted: the editor's first load after the fixes merged `main` (with site #37) into `edits` as `18cfe58`. It is 9 ahead of `main` (the 8 saves and the merge) and 0 behind, and the 6 pages are as they were. Squash and rebase merging are now off in both site repositories.
 
 ## Test results
 
@@ -505,12 +506,12 @@ The risk accepted: a stolen editor sign-in could then change the site's workflow
   - The live `edits` branch, merged locally (never pushed) with the site's `main` plus #37, as the editor's next load will merge it: clean, the 6 pages byte for byte as on `edits`, and 98 of 98 static tests.
 - **Still to run, later** (not possible here):
   - The fixes against the real GitHub. Only the fake GitHub saw them, because the editor wasn't run against the live repositories:
-    - `edits` moved up on load and after a merge, with and without the Workflows permission;
+    - `edits` moved up on load and after a merge;
     - the file-history lookup of a changed new version;
     - the pull request's text kept;
     - a file renamed upstream.
 
-    `docs/setup.md` lists them as live checks 11 to 15.
+    `docs/setup.md` lists them as live checks 11 to 15. The first half of 11 happened on 27 September: the editor's first load merged `main` into the live `edits` (`18cfe58`).
   - In the site: the content review's first real run, and §6 step 6's commands at the merge (its note's "Still to test").
 
 ## Reproducing
