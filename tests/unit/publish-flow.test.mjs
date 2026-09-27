@@ -152,6 +152,22 @@ test("a file renamed or deleted elsewhere since it was loaded is a conflict that
   assert.equal(fake.fileAt("edits", "physics.html"), null, "not recreated");
 });
 
+test("searchHistory reads a file's earlier versions, newest first, until one matches", async () => {
+  const { fake, flow } = await setup();
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking once", loaded.files.get("physics.html"), fake)], "one");
+  await flow.save([await change("physics.html", "Thinking once", "Thinking twice", flow.state.files.get("physics.html"), fake, "edits")], "two");
+  await flow.save([await change("index.html", "Pick whatever", "Pick anything", flow.state.files.get("index.html"), fake, "edits")], "three");
+  const seen = [];
+  const found = await flow.searchHistory("physics.html", (text) => {
+    seen.push(/Thinking (\w+)/.exec(text)[1]);
+    return text.includes("Thinking once") ? "once" : null;
+  });
+  assert.equal(found, "once");
+  assert.deepEqual(seen, ["twice", "once"], "newest first, only commits that changed the file, stopping at the match");
+  assert.equal(await flow.searchHistory("physics.html", () => null), null);
+});
+
 test("a branch that moves between reading and writing is retried from the new head", async () => {
   let raced = false;
   const { fake, flow } = await setup({

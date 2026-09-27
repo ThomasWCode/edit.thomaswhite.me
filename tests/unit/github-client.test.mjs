@@ -234,6 +234,19 @@ test("mergeBranch merges one branch into another with no pull request", async ()
   await assert.rejects(client.mergeBranch("edits", "main", "clash"), (error) => error instanceof GitHubError && error.code === "conflict");
 });
 
+test("listCommits and getTreeFiles read a file's history", async () => {
+  const { client, calls } = setup([
+    json(200, [{ sha: "c1", commit: { tree: { sha: "t1" } } }]),
+    json(200, { tree: [{ path: "blog/x y.html", type: "blob", sha: "b1" }, { path: "blog", type: "tree", sha: "t2" }], truncated: false }),
+  ]);
+  assert.deepEqual(await client.listCommits({ sha: "head", path: "blog/x y.html", perPage: 5 }), [{ sha: "c1", commit: { tree: { sha: "t1" } } }]);
+  assert.deepEqual([...(await client.getTreeFiles("t1"))], [["blog/x y.html", "b1"]]);
+  assert.deepEqual(
+    calls.map((call) => `${call.method} ${call.url.replace(REPO, "")}`),
+    ["GET /commits?sha=head&path=blog%2Fx+y.html&per_page=5", "GET /git/trees/t1?recursive=1"],
+  );
+});
+
 test("gitBlobSha matches git hash-object", async () => {
   assert.equal(await gitBlobSha(""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
   assert.equal(await gitBlobSha("hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a");

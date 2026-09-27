@@ -210,6 +210,21 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
     return { files, screenshots, title: files.length ? summarise(files) : PR_TITLE };
   }
 
+  // Earlier versions of a file, newest first, from the commits that changed it
+  // up to the head this tab loaded: `match(text)` is tried on each (at most
+  // `limit` commits), and the first answer that isn't null returned. Only reads.
+  async function searchHistory(path, match, limit = 20) {
+    const seen = new Set();
+    for (const listed of await client.listCommits({ sha: state.head, path, perPage: limit })) {
+      const blob = (await client.getTreeFiles(listed.commit.tree.sha)).get(path);
+      if (!blob || seen.has(blob)) continue;
+      seen.add(blob);
+      const found = match(await client.getBlobText(blob));
+      if (found !== null && found !== undefined) return found;
+    }
+    return null;
+  }
+
   // Rewrites an open pull request's description from the branch, keeping your
   // note (or setting `note`), and its title while it is still the generated
   // one (or setting `title`). `pr` should be fresh from GitHub.
@@ -602,6 +617,7 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
     save,
     publish,
     describeBranch,
+    searchHistory,
     updatePullRequest,
     refreshChecks,
     merge,

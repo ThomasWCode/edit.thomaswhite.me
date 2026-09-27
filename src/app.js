@@ -13,9 +13,12 @@ import {
   draftAround,
   draftPhrase,
   hasWaitingVersion,
+  liveAsItWas,
+  liveChanged,
   makeDraft,
   markDraft,
   publishDraft,
+  recordLive,
   refuseWaitingChange,
   WAITING,
 } from "./drafting.js";
@@ -34,7 +37,7 @@ import {
 } from "./edits.js";
 import { GitHubError } from "./github-client.js";
 import { newPostSource, normaliseMarkdown, recordSlugs } from "./markdown-files.js";
-import { attribute, blockText, buildPageModel, collapse, EDITOR_DRAFT_KINDS, pageTitle, textOf } from "./page-model.js";
+import { attribute, blockText, buildPageModel, collapse, EDITOR_DRAFT_KINDS, pageTitle, previousElementSibling, textOf } from "./page-model.js";
 import { createPreview } from "./preview.js";
 import { BusyError, createPublishFlow, SaveConflictError } from "./publish-flow.js";
 import { fallbackLabel, isPublishedHtml, labelFromTitle, liveUrl, markdownFiles, readOnlyReason, sortPages } from "./site-files.js";
@@ -589,8 +592,73 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
 
   async function runPublishDraft(key) {
     const kind = attribute(current().model.nodeOf.get(key), "data-draft");
+    // A new version whose live element changed since it was made waits: both are shown instead.
+    if (kind === "replace" && liveChanged(current().model, key)) {
+      await showLiveChanged(key);
+      return;
+    }
     const label = kind === "remove" ? "Removed content marked to remove" : kind === "replace" ? "Published a new version" : "Published a draft";
     await applyOperation(label, (model) => publishDraft(model, key), { reshapes: true, drafting: "none" });
+  }
+
+  async function runRecordLive(key) {
+    await applyOperation("Recorded the live version as it is now", (model) => recordLive(model, key), { drafting: "none" });
+  }
+
+  // A new version (at `key`) whose live element has changed since it was made,
+  // on main say: the live element as it was, as it is now, and the new
+  // version, as word runs, so the change can be carried into the new version
+  // by typing. Publishing waits until the live element is recorded as it is
+  // now. The version as it was is looked up in the file's history on GitHub.
+  async function showLiveChanged(key) {
+    const entry = current();
+    const draft = entry.model.nodeOf.get(key);
+    const live = previousElementSibling(draft);
+    const version = (node) => ({ text: collapse(textOf(node)), source: entry.model.source.slice(node.sourceCodeLocation.startOffset, node.sourceCodeLocation.endOffset) });
+    const now = version(live);
+    const mine = version(draft);
+    const recorded = attribute(draft, "data-draft-of");
+    const history = h("div", {}, h("p", { class: "small" }, "Looking up the live version as it was when this new version was made…"));
+    const shown = openDialog($("save-dialog"), {
+      title: "The live version has changed",
+      body: h(
+        "div",
+        {},
+        h("p", {}, "The live version before this new version has changed since the new version was made (in a Claude session, say). Publishing the new version now would undo that change, so it isn't published."),
+        history,
+        h("p", {}, "Carry the change into the new version by typing in it. Then record the live version as it is now, and publish."),
+      ),
+      actions: [
+        { label: "Close", value: null },
+        { label: "Record the live version as it is now", value: "record" },
+      ],
+    });
+    (async () => {
+      let was = null;
+      try {
+        if (recorded) was = await flow.searchHistory(entry.path, (text) => liveAsItWas(text, entry.path, recorded));
+      } catch {
+        was = null;
+      }
+      history.replaceChildren(
+        ...(was
+          ? [h("h3", {}, "What changed in the live version"), runsView(was, now), h("h3", {}, "Your new version, against the live version as it was"), runsView(was, mine)]
+          : [
+              h("p", { class: "small" }, "The live version as it was couldn't be found in the file's history."),
+              h("h3", {}, "Your new version, against the live version now"),
+              runsView(now, mine),
+            ]),
+      );
+    })();
+    if ((await shown) === "record") await runRecordLive(key);
+  }
+
+  // Word runs from one version of an element to another. When only markup
+  // differs (a link's address, say), the sources are compared instead.
+  function runsView(before, after) {
+    const [a, b] = before.text === after.text ? [before.source, after.source] : [before.text, after.text];
+    const runs = trimEqualRuns(wordDiff(a, b));
+    return h("p", { class: "change-words" }, runs.map((run) => h("span", { class: `word word--${run.type}` }, `${run.text} `)));
   }
 
   async function runDiscardDraft(key) {
@@ -1754,6 +1822,17 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
           button(names.discard, () => runDiscardDraft(draftKey), { small: true, kind: around.kind === "remove" ? "quiet" : "danger" }),
         ),
       );
+      if (around.kind === "replace" && liveChanged(model, draftKey)) {
+        part.append(
+          h("p", { class: "notice notice--warning" }, "The live version has changed since this new version was made, so it isn't published yet. Carry the change into this version, then record the live version as it is now."),
+          h(
+            "div",
+            { class: "button-row" },
+            button("Show both", () => showLiveChanged(draftKey), { small: true }),
+            button("Record the live version", () => runRecordLive(draftKey), { small: true }),
+          ),
+        );
+      }
     } else if (!around) {
       const section = [block.node, ...ancestorsWithin(block.node, model.main)].find((node) => node.tagName === "section");
       const whole = h("div", { class: "button-row" }, button("Make this a draft", () => runMakeDraft(block.key, blockName(model, block.key).toLowerCase()), { small: true }));

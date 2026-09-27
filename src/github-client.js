@@ -115,14 +115,24 @@ export function createGitHubClient({ target, fetch, getAccessToken, now = () => 
     // Every file path in a commit, with its blob SHA.
     async getCommitTree(commitSha) {
       const commit = await client.getCommit(commitSha);
-      const tree = await json("GET", `${repo}/git/trees/${commit.tree.sha}?recursive=1`);
+      return { commit, treeSha: commit.tree.sha, files: await client.getTreeFiles(commit.tree.sha) };
+    },
+
+    // Every file path in a tree, with its blob SHA.
+    async getTreeFiles(treeSha) {
+      const tree = await json("GET", `${repo}/git/trees/${treeSha}?recursive=1`);
       if (tree.truncated) {
         throw new GitHubError({ status: 200, code: "tree_truncated", message: "The repository tree is too large to list." });
       }
       const files = new Map();
       for (const entry of tree.tree) if (entry.type === "blob") files.set(entry.path, entry.sha);
-      return { commit, treeSha: commit.tree.sha, files };
+      return files;
     },
+
+    // The commits that changed `path`, newest first, from `sha` back, as
+    // GitHub lists them: [{ sha, commit: { tree: { sha } } }].
+    listCommits: ({ sha, path, perPage = 20 }) =>
+      json("GET", `${repo}/commits?${new URLSearchParams({ sha, path, per_page: String(perPage) })}`),
 
     // A text file's exact bytes, decoded as UTF-8 (invalid UTF-8 throws). The
     // JSON form (base64) is always served by api.github.com, the only API host
