@@ -140,7 +140,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   const current = () => (currentPath ? entries.get(currentPath) : null);
   const isDirty = (entry) => entry.status === "ready" && (entry.isNew || entry.working !== entry.original);
   const dirtyEntries = () => [...entries.values()].filter(isDirty);
-  const pageEntries = () => [...entries.values()].filter((entry) => entry.kind === "page");
+  const pageEntries = () => [...entries.values()].filter((entry) => entry.kind === "page" && entry.status !== "gone");
 
   function makeEntry(path, kind, sha) {
     return {
@@ -168,6 +168,9 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   }
 
   // Builds the list from a tree, keeping loaded files whose blob is unchanged.
+  // Unsaved edits to a file that is no longer in the tree (renamed or deleted
+  // on GitHub) are kept, under "No longer on GitHub", until they are
+  // discarded; that file is never saved, so never recreated.
   function syncEntries(files) {
     const paths = [...files.keys()];
     const next = new Map();
@@ -182,14 +185,29 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     for (const path of markdown.blogSources) keep(path, "markdown");
     for (const path of store.paths()) {
       const record = store.load(path);
-      if (!next.has(path) && record && record.isNew) {
+      if (next.has(path) || !record) continue;
+      if (record.isNew) {
         const entry = entries.get(path) || makeEntry(path, "markdown", null);
         entry.isNew = true;
         next.set(path, entry);
+      } else {
+        const entry = goneEntry(path, record);
+        if (entry) next.set(path, entry);
+        else store.remove(path);
       }
     }
     entries.clear();
     for (const [path, entry] of next) entries.set(path, entry);
+  }
+
+  // A file no longer on GitHub, with the edits kept for it: every set of
+  // { original, working } in its record, the latest last. Null when the
+  // record holds none.
+  function goneEntry(path, record) {
+    const sets = [...staleSets(record.stale), ...(record.working !== record.original ? [{ original: record.original, working: record.working }] : [])];
+    if (!sets.length) return null;
+    const entry = makeEntry(path, path.endsWith(".html") ? "page" : "markdown", null);
+    return Object.assign(entry, { status: "gone", stale: sets, working: sets[sets.length - 1].working });
   }
 
   function buildModel(entry, text) {
@@ -197,7 +215,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   }
 
   async function ensureLoaded(entry) {
-    if (entry.status === "ready" || entry.status === "error") return entry;
+    if (entry.status === "ready" || entry.status === "error" || entry.status === "gone") return entry;
     if (entry.loading) return entry.loading;
     entry.status = "loading";
     entry.loading = (async () => {
@@ -433,7 +451,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   async function applyOperation(label, operation, { reshapes = false, drafting = "copy", ...renderOptions } = {}) {
     preview.finishEditing();
     const entry = current();
-    if (!entry || entry.kind !== "page") return;
+    if (!entry || entry.kind !== "page" || entry.status !== "ready") return;
     let result;
     try {
       result = operation(entry.model);
@@ -718,6 +736,18 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     const entry = entries.get(path);
     renderFileList();
     renderStageBar();
+    if (entry.status === "gone") {
+      // Its edited text, to copy from; nothing here can be saved.
+      $("frame-wrap").hidden = true;
+      const editor = $("markdown-editor");
+      editor.hidden = false;
+      editor.value = entry.working;
+      editor.readOnly = true;
+      stageMessage("No longer on GitHub: your edited text, to copy from. It can't be saved here.", "warning");
+      renderPanel();
+      renderTopbar();
+      return;
+    }
     if (entry.status !== "ready") {
       stageMessage(`Loading ${entry.label}…`);
       $("frame-wrap").hidden = true;
@@ -1114,13 +1144,19 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   }
 
   async function resolveConflict(error, dirty) {
+    const gone = error.gone || [];
+    const changed = error.conflicts.filter((path) => !gone.includes(path));
     const choice = await openDialog($("confirm-dialog"), {
       title: "Changed on GitHub",
       body: h(
         "div",
         {},
-        h("p", {}, `${error.conflicts.join(", ")} changed on GitHub since this tab loaded ${error.conflicts.length === 1 ? "it" : "them"} (another device, or a Claude session).`),
+        changed.length ? h("p", {}, `${changed.join(", ")} changed on GitHub since this tab loaded ${changed.length === 1 ? "it" : "them"} (another device, or a Claude session).`) : null,
+        gone.length
+          ? h("p", {}, `${gone.join(", ")} ${gone.length === 1 ? "is" : "are"} no longer on GitHub: renamed or deleted there (in a Claude session, say). The editor won't recreate ${gone.length === 1 ? "it" : "them"}.`)
+          : null,
         h("p", {}, "Reload loads GitHub's version of those files and keeps your unsaved edits to them aside, to copy from. Your other files keep their edits."),
+        gone.length ? h("p", {}, "Edits to a file no longer on GitHub are listed under “No longer on GitHub” until you discard them.") : null,
       ),
       actions: [
         { label: "Cancel", value: null },
@@ -1511,12 +1547,13 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   }
 
   function renderFileList() {
-    const lists = { page: $("page-list"), record: $("record-list"), blog: $("blog-source-list") };
+    const lists = { page: $("page-list"), record: $("record-list"), blog: $("blog-source-list"), gone: $("gone-list") };
     for (const list of Object.values(lists)) list.replaceChildren();
     for (const entry of entries.values()) {
-      const list = entry.kind === "page" ? lists.page : entry.path === target.markdown.record ? lists.record : lists.blog;
+      const list = entry.status === "gone" ? lists.gone : entry.kind === "page" ? lists.page : entry.path === target.markdown.record ? lists.record : lists.blog;
       const badges = [];
       if (isDirty(entry)) badges.push(h("span", { class: "file-badge file-badge--changed", title: "Unsaved changes" }, "edited"));
+      if (entry.status === "gone") badges.push(h("span", { class: "file-badge file-badge--changed", title: "Unsaved edits kept aside" }, "kept"));
       if (entry.model && entry.model.readOnly) badges.push(h("span", { class: "file-badge file-badge--locked", title: entry.model.readOnly }, "read-only"));
       else if (entry.model && entry.model.drafts.length) badges.push(h("span", { class: "file-badge file-badge--drafts", title: `${entry.model.drafts.length} drafts` }, String(entry.model.drafts.length)));
       if (entry.status === "error") badges.push(h("span", { class: "file-badge file-badge--locked" }, "error"));
@@ -1541,6 +1578,8 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     }
     if (!lists.record.children.length) lists.record.append(h("li", { class: "small" }, "No record file."));
     if (!lists.blog.children.length) lists.blog.append(h("li", { class: "small" }, "No blog sources yet."));
+    lists.gone.hidden = !lists.gone.children.length;
+    $("gone-heading").hidden = lists.gone.hidden;
   }
 
   function renderStageBar() {
@@ -1555,7 +1594,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     } else {
       live.hidden = true;
     }
-    $("width-toggle").hidden = entry.kind !== "page";
+    $("width-toggle").hidden = entry.kind !== "page" || entry.status === "gone";
   }
 
   // ---- The side panel ------------------------------------------------------------------
@@ -1564,6 +1603,10 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     const panel = $("panel");
     const entry = current();
     panel.replaceChildren();
+    if (entry && entry.status === "gone") {
+      panel.append(goneNotice(entry));
+      return;
+    }
     if (!entry || entry.status !== "ready") return;
     if (entry.kind === "markdown") {
       if (entry.stale) panel.append(staleNotice(entry));
@@ -1606,6 +1649,47 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
         renderPanel();
       }, { small: true, kind: "quiet" })),
     );
+  }
+
+  // A file no longer on GitHub: the edits kept for it, and Discard.
+  function goneNotice(entry) {
+    const view = () =>
+      openDialog($("save-dialog"), {
+        title: "Your edits to a file no longer on GitHub",
+        body: h(
+          "div",
+          {},
+          h("p", {}, `${entry.path} is no longer on GitHub. These are your unsaved edits to it. Copy what you need, then discard them.`),
+          entry.stale.map((set) => hunksView(set.original || "", set.working)),
+        ),
+        actions: [{ label: "Close", value: null }],
+      });
+    return h(
+      "section",
+      { class: "panel-section notice notice--warning" },
+      h("h2", {}, entry.label),
+      h(
+        "p",
+        {},
+        `${entry.path} is no longer on GitHub (renamed or deleted there, in a Claude session, say), so your unsaved edits to it weren't applied, and the editor won't save or recreate it. They're kept until you discard them: copy what you need into the file where it lives now.`,
+      ),
+      h("div", { class: "button-row" }, button("Show them", view, { small: true }), button("Discard them", () => discardGone(entry), { small: true, kind: "quiet" })),
+    );
+  }
+
+  async function discardGone(entry) {
+    const confirmed = await confirmAction($("confirm-dialog"), {
+      title: "Discard these edits?",
+      message: `Your unsaved edits to ${entry.path}, which is no longer on GitHub, will be deleted from this tab. Copy anything you need first.`,
+      confirm: "Discard edits",
+      kind: "danger",
+    });
+    if (!confirmed) return;
+    store.remove(entry.path);
+    entries.delete(entry.path);
+    renderFileList();
+    if (currentPath === entry.path) await open(firstPagePath());
+    renderTopbar();
   }
 
   function blockPanel(entry, key) {
@@ -1857,7 +1941,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   async function goTo(path, key) {
     if (currentPath !== path) await open(path);
     const entry = current();
-    if (!entry || entry.kind !== "page" || !entry.model.nodeOf.has(key)) return;
+    if (!entry || entry.kind !== "page" || entry.status !== "ready" || !entry.model.nodeOf.has(key)) return;
     const kind = entry.model.blockByKey.has(key) ? "block" : "none";
     preview.select({ kind, key });
   }
@@ -1926,7 +2010,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     let markdownTimer = null;
     editor.oninput = () => {
       const entry = current();
-      if (!entry || entry.kind !== "markdown") return;
+      if (!entry || entry.kind !== "markdown" || entry.status !== "ready") return;
       clearTimeout(markdownTimer);
       entry.working = editor.value;
       renderTopbar();

@@ -39,11 +39,14 @@ const UPDATE_TIMEOUT_MS = 60_000;
 const MERGEABLE_RETRIES = 5;
 
 export class SaveConflictError extends Error {
-  constructor(conflicts, head) {
+  // `gone`: the conflicting files that are no longer on GitHub at all
+  // (renamed or deleted there).
+  constructor(conflicts, head, gone = []) {
     super(`${conflicts.join(", ")} changed on GitHub since this tab loaded ${conflicts.length === 1 ? "it" : "them"}.`);
     this.name = "SaveConflictError";
     this.conflicts = conflicts;
     this.head = head;
+    this.gone = gone;
   }
 }
 
@@ -303,16 +306,19 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
         if (head !== state.head) ({ files: tree } = await client.getCommitTree(head));
         const judged = tree || state.files;
         const conflicts = [];
+        const gone = [];
         const pending = [];
         for (const change of changes) {
           const current = judged.get(change.path) ?? null;
           if (current === newShas.get(change.path)) continue;
-          if (current !== (change.loadedSha ?? null)) conflicts.push(change.path);
-          else pending.push(change);
+          if (current !== (change.loadedSha ?? null)) {
+            conflicts.push(change.path);
+            if (current === null) gone.push(change.path);
+          } else pending.push(change);
         }
         if (conflicts.length) {
           set({ phase: state.pr ? "checking" : "ready" });
-          throw new SaveConflictError(conflicts, head);
+          throw new SaveConflictError(conflicts, head, gone);
         }
         if (!pending.length) {
           sha = head;

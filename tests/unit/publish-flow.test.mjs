@@ -139,6 +139,19 @@ test("a file that changed elsewhere since it was loaded is a conflict, not an ov
   assert.match(fake.fileAt("edits", "physics.html"), /Thinking elsewhere/, "the other change is not overwritten");
 });
 
+test("a file renamed or deleted elsewhere since it was loaded is a conflict that names it as gone, and is never recreated", async () => {
+  const { fake, flow } = await setup();
+  const loaded = await flow.load();
+  await fake.commitAs("main", { "physics.html": null, "physics-renamed.html": fake.fileAt("main", "physics.html") });
+  const edit = { path: "physics.html", text: readFixture("physics.html").replace("Thinking about things", "Thinking hard"), loadedSha: loaded.files.get("physics.html") };
+  const other = await change("index.html", "Pick whatever", "Pick anything", loaded.files.get("index.html"), fake);
+  await assert.rejects(
+    flow.save([edit, other], "one"),
+    (error) => error instanceof SaveConflictError && error.conflicts.join() === "physics.html" && error.gone.join() === "physics.html",
+  );
+  assert.equal(fake.fileAt("edits", "physics.html"), null, "not recreated");
+});
+
 test("a branch that moves between reading and writing is retried from the new head", async () => {
   let raced = false;
   const { fake, flow } = await setup({

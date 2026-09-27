@@ -68,7 +68,7 @@ export async function createMockSession({ target }) {
       button("Another device edits this page", async () => {
         const entry = app.current;
         const branch = fake.head("edits") ? "edits" : "main";
-        if (!entry) return;
+        if (!entry || entry.status !== "ready") return;
         await fake.commitAs(branch, { [entry.path]: `${fake.fileAt(branch, entry.path)}<!-- edited elsewhere -->\n` });
         say(`${entry.path} changed on ${branch}: saving it now is a conflict.`);
       }, { small: true }),
