@@ -438,6 +438,22 @@ export async function createFakeGitHub({
       afterPush(pull.head.ref, sha, false);
       return json(202, { message: "Updating pull request branch.", url: `${API}/repos/${owner}/${repo}/pulls/${pull.number}` });
     }],
+    // Merging one branch into another without a pull request, as GitHub does
+    // it at once: 201 and the merge commit, 204 when base has head already,
+    // 409 on a conflict (here, both sides changed the same file).
+    ["POST", /^\/merges$/, async (match, request, body) => {
+      const base = refs.get(body.base);
+      const head = refs.get(body.head) || (commits.has(body.head) ? body.head : null);
+      if (!base || !head) return error(404, "Base or head does not exist");
+      if (ancestors(base).has(head)) return new Response(null, { status: 204 });
+      const tree = await mergeTrees(base, head);
+      if (!tree) return error(409, "Merge conflict");
+      const message = body.commit_message || `Merge ${body.head} into ${body.base}`;
+      const sha = await storeCommit({ tree, parents: [base, head], message, author: person });
+      refs.set(body.base, sha);
+      afterPush(body.base, sha, false);
+      return json(201, { sha, commit: { message }, parents: [{ sha: base }, { sha: head }] });
+    }],
     ["GET", /^\/commits\/([0-9a-f]+)\/check-runs$/, (match) => {
       const runs = checkRuns.filter((run) => run.head_sha === match[1]);
       runs.forEach(advanceRun);

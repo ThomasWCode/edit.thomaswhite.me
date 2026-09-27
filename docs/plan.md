@@ -31,6 +31,10 @@ Approved on 25 September 2026 after five clarifying questions. This copy is the 
   - the editor: `drafting.js`, a Drafts toggle, draft actions in the panel and toolbar, and descriptions that list drafts apart from live changes (`how-it-works.md`, "Drafts"). The editor's tab also has the site's favicon now.
 
   Found alongside: in Firefox, typing after a click on one of the editor's own buttons went nowhere; fixed. Tom's unpublished edits on the preview's `edits` branch were left alone. Locally: 154 unit tests, and 22 journeys in all three engines.
+- 27 September 2026: #3 and the site's #35 merged after two Codex rounds, and the live site's build was run once as a check. Tom asked whether `edits` keeps up with `main`: it didn't, and **Update from main** needed an open pull request. Now:
+  - when the editor opens with saves on `edits`, no pull request and nothing unsaved, it merges `main` in first, with a merge commit that runs nothing;
+  - **Update from main** works with or without a pull request;
+  - with a pull request open it stays manual, because updating then runs the checks again.
 
 ### Where the build differs from this plan
 

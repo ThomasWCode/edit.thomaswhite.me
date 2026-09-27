@@ -12,6 +12,15 @@
 // unchanged on the new head is committed on top (the baseline bot only touches
 // PNGs); a file that changed there is a conflict for the person to resolve.
 //
+// Keeping up with main: while `edits` holds saves and no pull request is open,
+// load() first merges main into it on GitHub (a merge commit; nothing runs, as
+// no pull request is open), unless the caller has unsaved work, so the pages
+// open as they are now. If both changed the same lines, GitHub refuses:
+// `edits` stays as it was and the notice names the files both changed.
+// updateFromMain() does the same on request, pull request or not; with one
+// open it goes through the pull request's "Update branch", and the checks run
+// again, which is why that is never automatic.
+//
 // One mutation runs at a time (`busy`). The UI renders `state` and calls the
 // methods; `sleep` and `now` are injected so tests run instantly.
 
@@ -42,6 +51,14 @@ export class BusyError extends Error {
   constructor() {
     super("Another GitHub action is still running.");
     this.name = "BusyError";
+  }
+}
+
+// main and edits changed the same lines, so GitHub can't merge them.
+export class MainClashError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "MainClashError";
   }
 }
 
@@ -133,6 +150,31 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
 
   const baselineChanged = () => state.changedPaths.some((path) => target.visualBaselinePages.includes(path));
 
+  // The files main and edits have both changed since they parted: where a
+  // clash between them lies.
+  async function filesBothChanged() {
+    const [ours, theirs] = await Promise.all([client.compare(target.base, target.branch), client.compare(target.branch, target.base)]);
+    const mine = new Set((ours.files || []).map((file) => file.filename));
+    return (theirs.files || []).map((file) => file.filename).filter((path) => mine.has(path));
+  }
+
+  // Merges main into edits on GitHub. Returns the new head (edits' own when it
+  // has main's changes already). A clash throws a MainClashError naming the
+  // files both changed.
+  async function mergeMainIn() {
+    try {
+      const sha = await client.mergeBranch(target.branch, target.base, `Merge ${target.base} into ${target.branch}`);
+      return sha || (await client.getRef(target.branch));
+    } catch (error) {
+      if (!(error instanceof GitHubError) || error.code !== "conflict") throw error;
+      const both = await filesBothChanged();
+      // Publishing wouldn't help: the pull request would clash the same way.
+      throw new MainClashError(
+        `${target.base} has changed ${both.length ? both.join(", ") : "the same lines"} too, so its changes can't be brought in automatically, and publishing would clash the same way. Ask a Claude session to resolve it on ${target.branch}; your saved edits stay as they are until then.`,
+      );
+    }
+  }
+
   // The branch's changes against main, from their merge base as the pull
   // request shows them: { files, screenshots, title }. Only reads.
   async function describeBranch() {
@@ -189,20 +231,43 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
   // Loads the branch the editor works on: `edits` if it exists, else main.
   // An `edits` holding nothing main lacks, with no pull request open, is
   // deleted first: a pull request merged on GitHub itself leaves its branch
-  // behind, and loading it would show an older copy of the site.
-  async function load() {
+  // behind, and loading it would show an older copy of the site. An `edits`
+  // with saves that main has moved on from gets main's changes first, when
+  // `autoUpdate` says nothing is unsaved (see the top of this file).
+  async function load({ autoUpdate = false } = {}) {
     return exclusive(async () => {
       set({ phase: "loading", notice: "" });
       let branchHead = await client.getRef(target.branch);
       const pr = branchHead ? await client.findOpenPr() : null;
-      if (branchHead && !pr && (await client.compare(target.base, branchHead)).ahead_by === 0) {
-        await client.deleteBranch(target.branch);
-        branchHead = null;
+      let notice = "";
+      if (branchHead && !pr) {
+        const comparison = await client.compare(target.base, branchHead);
+        if (comparison.ahead_by === 0) {
+          await client.deleteBranch(target.branch);
+          branchHead = null;
+        } else if (comparison.behind_by > 0 && autoUpdate) {
+          const count = `${comparison.behind_by} newer ${comparison.behind_by === 1 ? "commit" : "commits"}`;
+          const brought = `Brought ${target.base}'s ${count} into your saved edits, so you're editing the site as it is now.`;
+          try {
+            branchHead = await mergeMainIn();
+            notice = brought;
+          } catch (error) {
+            if (error instanceof MainClashError) notice = error.message;
+            else if (error instanceof GitHubError && error.code !== "unauthorized") {
+              // The merge may have landed with its answer lost: load edits as it is now.
+              const now = await client.getRef(target.branch);
+              if (now && now !== branchHead) {
+                branchHead = now;
+                notice = brought;
+              } else notice = `${target.base} has ${count} that couldn't be brought in just now: Update from main in Publish tries again.`;
+            } else throw error;
+          }
+        }
       }
       const head = branchHead || (await client.getRef(target.base));
       if (!head) throw new GitHubError({ status: 404, code: "not_found", message: `${target.base} was not found.` });
       const { files } = await client.getCommitTree(head);
-      set({ head, onBranch: Boolean(branchHead), files, pr, phase: pr ? "checking" : "ready" });
+      set({ head, onBranch: Boolean(branchHead), files, pr, phase: pr ? "checking" : "ready", notice });
       if (branchHead) await readBranchState();
       else set({ aheadBy: 0, behindBy: 0, changedPaths: [] });
       return { head, files, onBranch: Boolean(branchHead), pr };
@@ -231,21 +296,23 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
           const baseHead = await client.getRef(target.base);
           head = await client.createBranch(target.branch, baseHead);
         }
-        let pending = changes;
-        if (head !== state.head) {
-          ({ files: tree } = await client.getCommitTree(head));
-          const conflicts = [];
-          pending = [];
-          for (const change of changes) {
-            const current = tree.get(change.path) ?? null;
-            if (current === newShas.get(change.path)) continue;
-            if (current !== (change.loadedSha ?? null)) conflicts.push(change.path);
-            else pending.push(change);
-          }
-          if (conflicts.length) {
-            set({ phase: state.pr ? "checking" : "ready" });
-            throw new SaveConflictError(conflicts, head);
-          }
+        // Each change is judged against the head's own tree when edits moved,
+        // else against the tree held for it. A change made to another version
+        // of its file than that (a tab whose reload failed after main was
+        // brought in, say) is a conflict either way, never an overwrite.
+        if (head !== state.head) ({ files: tree } = await client.getCommitTree(head));
+        const judged = tree || state.files;
+        const conflicts = [];
+        const pending = [];
+        for (const change of changes) {
+          const current = judged.get(change.path) ?? null;
+          if (current === newShas.get(change.path)) continue;
+          if (current !== (change.loadedSha ?? null)) conflicts.push(change.path);
+          else pending.push(change);
+        }
+        if (conflicts.length) {
+          set({ phase: state.pr ? "checking" : "ready" });
+          throw new SaveConflictError(conflicts, head);
         }
         if (!pending.length) {
           sha = head;
@@ -464,12 +531,20 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
     return state.deploy;
   }
 
-  // Merges main into edits (the pull request's "Update branch"). GitHub does
-  // the merge a moment after accepting the request: this waits for edits to
-  // move and reads its new tree, so the interface can reload the files before
-  // anything is checked or saved against the old ones.
+  // Merges main into edits. Without a pull request GitHub merges at once and
+  // nothing runs. With one, it goes through the pull request's "Update
+  // branch": GitHub merges a moment after accepting the request, so this waits
+  // for edits to move. Either way it reads the new tree, so the interface can
+  // reload the files before anything is checked or saved against the old ones.
   async function updateFromMain() {
     return exclusive(async () => {
+      if (!state.pr) {
+        const head = await mergeMainIn();
+        const { files } = await client.getCommitTree(head);
+        set({ head, files, notice: `Brought in ${target.base}'s changes.` });
+        await readBranchState();
+        return { updated: true, head };
+      }
       const pr = await client.getPr(state.pr.number);
       await client.updateBranch(pr.number, pr.head.sha);
       const started = now();

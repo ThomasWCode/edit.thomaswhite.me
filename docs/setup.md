@@ -76,12 +76,18 @@ GitHub → Settings → Applications → Authorized GitHub Apps → Homepage Sit
 ### Working on the editor locally
 
 - `npm ci`, then `npx playwright install chromium` (add `firefox webkit` for `npm run test:e2e:all`).
-- `npm run dev` serves the editor at `http://127.0.0.1:4174/`. Sign-in there uses the deployed Worker, which accepts that origin. `http://127.0.0.1:4174/?mock=1` needs no sign-in: an in-memory GitHub seeded from the test fixtures, with a panel to simulate the bot, another device, failing checks, conflicts and an expired token. Nothing leaves the browser.
+- `npm run dev` serves the editor at `http://127.0.0.1:4174/`. Sign-in there uses the deployed Worker, which accepts that origin. `http://127.0.0.1:4174/?mock=1` needs no sign-in: an in-memory GitHub seeded from the test fixtures, with a panel to simulate the bot, another device, main moving on, failing checks, conflicts and an expired token. Nothing leaves the browser.
 - `npm test` runs lint, the unit tests and the Chromium browser suite. CI runs the same on every pull request (about three Linux minutes).
 
 ### Switching to the main site
 
 Before the content-strategy merge (the site repository's `docs/implementation-notes.md` §6), publish or discard everything pending in the editor, so nothing is left on the preview repository's `edits`. Drafts may stay in the pages: they merge like any other markup. Just before merging, set the main repository's Settings → Pages → Source to **GitHub Actions** (§6 step 4). Its "Publish the live site" workflow then builds thomaswhite.me with drafts left out; with the old source, drafts would show there. After the merge: install the App on `ThomasWCode/ThomasWCode.github.io`, set `active` to `"main"` in `src/config.js`, publish that change through a pull request, then make a one-word test edit through the editor. Details in [`how-it-works.md`](how-it-works.md), "Switching targets".
+
+Around the merge (just before or just after is fine), also add the Claude routine in §6 step 5. It is a scheduled Claude agent on the main repository that reads each batch of new commits, the editor's included, and reports:
+
+- anything to add or question;
+- anything inconsistent;
+- anything added only to the site that also belongs in `docs/record.md` or the CV.
 
 ### If Pages stops publishing
 

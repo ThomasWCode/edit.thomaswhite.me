@@ -249,6 +249,111 @@ test("behind main: Update from main merges main into edits and re-runs the check
   assert.equal(flow.state.behindBy, 0);
 });
 
+test("saved edits catch up with main when the editor loads, with nothing unsaved and no pull request", async () => {
+  const { fake, flow } = await setup();
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking more", loaded.files.get("physics.html"), fake)], "one");
+  await fake.commitAs("main", { "index.html": fake.fileAt("main", "index.html").replace("Pick whatever", "Pick anything") });
+  await fake.commitAs("main", { "docs/record.md": `${fake.fileAt("main", "docs/record.md")}\nMain moved.\n` });
+
+  await flow.load();
+  assert.equal(flow.state.behindBy, 2, "without autoUpdate, edits is loaded as it is");
+
+  const before = fake.head("edits");
+  const pushes = fake.checkRuns().length;
+  await flow.load({ autoUpdate: true });
+  const merge = fake.commit(fake.head("edits"));
+  assert.deepEqual(merge.parents, [before, fake.head("main")], "a merge commit of main into edits");
+  assert.equal(merge.message, "Merge main into edits");
+  assert.equal(flow.state.behindBy, 0);
+  assert.equal(flow.state.head, fake.head("edits"));
+  assert.equal(flow.state.files.get("index.html"), await gitBlobSha(fake.fileAt("main", "index.html")), "the pages load as main has them now");
+  assert.match(fake.fileAt("edits", "physics.html"), /Thinking more/, "the saves are kept");
+  assert.match(flow.state.notice, /Brought main's 2 newer commits into your saved edits/);
+  assert.equal(fake.checkRuns().length, pushes, "nothing runs on GitHub for it");
+});
+
+test("with a pull request open, loading never merges main in: that runs the checks again", async () => {
+  const { fake, flow } = await setup();
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking more", loaded.files.get("physics.html"), fake)], "one");
+  await flow.publish();
+  await fake.commitAs("main", { "index.html": fake.fileAt("main", "index.html").replace("Pick whatever", "Pick anything") });
+  const head = fake.head("edits");
+  await flow.load({ autoUpdate: true });
+  assert.equal(fake.head("edits"), head);
+  assert.equal(flow.state.behindBy, 1, "Update from main is left to the person");
+});
+
+test("a clash with main leaves edits as it was and names the files both changed", async () => {
+  const { fake, flow } = await setup();
+  const loaded = await flow.load();
+  await flow.save([await change("index.html", "Pick whatever", "Pick something", loaded.files.get("index.html"), fake)], "one");
+  await fake.commitAs("main", { "index.html": fake.fileAt("main", "index.html").replace("Pick whatever", "Pick anything") });
+  const head = fake.head("edits");
+  await flow.load({ autoUpdate: true });
+  assert.equal(fake.head("edits"), head, "nothing merged");
+  assert.equal(flow.state.behindBy, 1);
+  assert.equal(flow.state.phase, "ready", "the editor still opens");
+  assert.match(flow.state.notice, /main has changed index\.html too/);
+  await assert.rejects(flow.updateFromMain(), /main has changed index\.html too/, "the button says the same");
+});
+
+test("a merge that lands with its answer lost is loaded, not missed", async () => {
+  let loseAnswer = false;
+  const { fake, flow } = await setup({
+    wrapFetch: (fetch) => async (url, init = {}) => {
+      const response = await fetch(url, init);
+      if (loseAnswer && init.method === "POST" && String(url).endsWith("/merges")) {
+        loseAnswer = false;
+        throw new TypeError("Failed to fetch");
+      }
+      return response;
+    },
+  });
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking more", loaded.files.get("physics.html"), fake)], "one");
+  await fake.commitAs("main", { "index.html": fake.fileAt("main", "index.html").replace("Pick whatever", "Pick anything") });
+  loseAnswer = true;
+  await flow.load({ autoUpdate: true });
+  assert.equal(fake.commit(fake.head("edits")).parents.length, 2, "GitHub did merge");
+  assert.equal(flow.state.head, fake.head("edits"), "and the flow holds the merged head");
+  assert.equal(flow.state.files.get("index.html"), await gitBlobSha(fake.fileAt("main", "index.html")));
+  assert.equal(flow.state.behindBy, 0);
+  assert.match(flow.state.notice, /Brought main's 1 newer commit/);
+});
+
+test("a save made to an older version of a file than the flow holds is a conflict, even when edits hasn't moved", async () => {
+  const { fake, flow } = await setup();
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking more", loaded.files.get("physics.html"), fake)], "one");
+  await fake.commitAs("main", { "index.html": fake.fileAt("main", "index.html").replace("Pick whatever", "Pick anything") });
+  await flow.load();
+  const oldIndex = flow.state.files.get("index.html");
+  await flow.updateFromMain();
+  // The tab's reload failed: its Home page still comes from the old blob.
+  const stale = { path: "index.html", text: readFixture("index.html").replace("Pick whatever", "Pick nothing"), loadedSha: oldIndex };
+  await assert.rejects(flow.save([stale], "stale"), SaveConflictError, "never an overwrite of main's change");
+  assert.match(fake.fileAt("edits", "index.html"), /Pick anything/);
+});
+
+test("Update from main without a pull request merges at once, and nothing runs", async () => {
+  const { fake, flow } = await setup();
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking more", loaded.files.get("physics.html"), fake)], "one");
+  await fake.commitAs("main", { "index.html": fake.fileAt("main", "index.html").replace("Pick whatever", "Pick anything") });
+  await flow.load();
+  assert.equal(flow.state.behindBy, 1);
+  const pushes = fake.checkRuns().length;
+  const result = await flow.updateFromMain();
+  assert.equal(result.head, fake.head("edits"));
+  assert.equal(fake.commit(fake.head("edits")).parents.length, 2);
+  assert.equal(flow.state.behindBy, 0);
+  assert.equal(flow.state.files.get("index.html"), await gitBlobSha(fake.fileAt("main", "index.html")));
+  assert.equal(fake.checkRuns().length, pushes);
+  assert.equal(countRequests(fake, "PUT", /update-branch/), 0, "no pull request, so no Update branch");
+});
+
 test("Update from main waits for GitHub's merge to land, then holds the new tree", async () => {
   // GitHub merges a moment after answering 202: edits still reads as before.
   let staleReads = 0;
