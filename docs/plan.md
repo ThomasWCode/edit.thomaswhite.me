@@ -50,7 +50,7 @@ Approved on 25 September 2026 after five clarifying questions. This copy is the 
 8. "+" is offered on list items and plain paragraphs only, not on eyebrows or the hero lede, whose copies would carry their styling class. Shift+Enter finishes a block like Enter.
 9. `?mock=1` is backed by `dev/mock-session.js` and `dev/fake-github.js`; the dev server serves the fixtures and a manifest at `/dev/site/` and adds `'self'` to `connect-src` in memory for them.
 10. CI runs the browser suite in Chromium; `npm run test:e2e:all` runs Chromium, Firefox and WebKit locally. The fixtures gained `blog/bridging-the-gap.html` (Physics & Ideas links to it) and `FILES.txt` (the site repository's file list, for the local-reference check).
-11. The first live test of Sign out (does revoking a token also kill its refresh token?) is still to come, with Tom's live checks.
+11. The live test of Sign out (does revoking a token also kill its refresh token?) was closed on 27 September: Tom asked for sign-in and sign-out to be taken as working, so Sign out keeps its current default.
 12. After the data-safety audit of 27 September (`docs/audits/2026-09-27-merge-safety.md`), decided with Tom:
     - `edits` is never deleted, where the plan merges and then deletes it: it is moved up to `main` by a fast-forward, which GitHub refuses once a save has landed on it. An `edits` holding nothing `main` lacks works exactly as no `edits` branch.
     - Typing goes on during a Save; what changed meanwhile stays unsaved, for the next Save.
@@ -58,7 +58,7 @@ Approved on 25 September 2026 after five clarifying questions. This copy is the 
     - Unsaved edits to a file no longer on GitHub are kept aside under "No longer on GitHub" until discarded; the file is never recreated.
     - All of Tom's text in a pull request's description is kept, above and below the generated list; the Publish dialog sends the title and note only if they were changed in it.
     - A reload finishes the block being typed first.
-    - The App holds the Workflows permission, where the plan had none; the site repositories allow merge commits only.
+    - The App holds the Workflows permission, where the plan had none; the site repositories allow merge commits only. Tom set both on 27 September.
 
 ## Context
 
