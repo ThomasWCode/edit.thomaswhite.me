@@ -1278,15 +1278,19 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     try {
       const described = await flow.describeBranch();
       const pr = flow.state.pr;
-      fields = messageFields({
-        kind: "pr",
-        title: pr && pr.title ? pr.title : described.title,
-        body: pr ? noteOf(pr.body) : "",
-        changes: forAi(described.files),
-        titleLabel: "Pull request title",
-        bodyLabel: "Description",
-        bodyHint: "Optional: a note above the list of changes, which the editor adds and keeps up to date on each save.",
-      });
+      const opened = { title: pr && pr.title ? pr.title : described.title, note: pr ? noteOf(pr.body) : "" };
+      fields = {
+        ...messageFields({
+          kind: "pr",
+          title: opened.title,
+          body: opened.note,
+          changes: forAi(described.files),
+          titleLabel: "Pull request title",
+          bodyLabel: "Description",
+          bodyHint: "Optional: a note above the list of changes, which the editor adds and keeps up to date on each save.",
+        }),
+        opened,
+      };
     } catch {
       fields = null;
     }
@@ -1296,9 +1300,13 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     if (publishDialogOpen) renderPublishDialog();
   }
 
+  // What was changed in the title and note since the dialog opened; null for
+  // the rest, which stays as it is on GitHub (changed there meanwhile, say).
   const publishWords = () => {
-    const words = publishFields ? publishFields.read() : null;
-    return words ? { title: words.title, note: words.body } : {};
+    if (!publishFields) return {};
+    const words = publishFields.read();
+    const { opened } = publishFields;
+    return { title: words.title !== opened.title.trim() ? words.title : null, note: words.body !== opened.note.trim() ? words.body : null };
   };
 
   // Bringing main in changes files on edits: it needs everything saved, and

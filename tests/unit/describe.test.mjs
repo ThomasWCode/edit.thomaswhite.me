@@ -10,6 +10,7 @@ import {
   forAi,
   hasAutoTitle,
   itemLine,
+  noteBelowOf,
   noteOf,
   prDescription,
   SUBJECT_LIMIT,
@@ -156,6 +157,15 @@ test("the pull request description: note, refreshed changes, footer, and the gen
   assert.equal(hasAutoTitle({ title: "My own title", body }, "Text edits from the editor"), false);
   assert.equal(hasAutoTitle({ title: "Text edits from the editor", body: "" }, "Text edits from the editor"), true, "the old fixed title");
   assert.equal(noteOf("Edits made at https://edit.thomaswhite.me.\n\nPages changed: …"), "", "an old generated body holds no note");
+
+  // Text of yours below the changes, above the footer or after the title comment, is kept below them.
+  assert.equal(noteBelowOf(body), "");
+  const withBelow = prDescription({ note: "Above.", below: "Below, with a list:\n\n- one\n- two", files: [page], autoTitle: title });
+  assert.equal(noteOf(withBelow), "Above.");
+  assert.equal(noteBelowOf(withBelow), "Below, with a list:\n\n- one\n- two");
+  assert.ok(withBelow.indexOf("Below, with a list") > withBelow.indexOf(CHANGES_END) && withBelow.indexOf("Below, with a list") < withBelow.indexOf("Edits made at"), "below the list, above the footer");
+  assert.equal(noteBelowOf(`${body}\nAdded at the very end on GitHub.\n`), "Added at the very end on GitHub.");
+  assert.equal(noteBelowOf("No markers here."), "", "a description without the list has nothing below it");
 
   // Page text can't mention anyone or add HTML: "@" gets a zero-width space, markup is escaped.
   const risky = describeFile({ path: "x.md", before: "Hi\n", after: "Hi @codex <script>\n" });

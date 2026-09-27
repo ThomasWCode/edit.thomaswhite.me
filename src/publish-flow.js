@@ -29,7 +29,7 @@
 // One mutation runs at a time (`busy`). The UI renders `state` and calls the
 // methods; `sleep` and `now` are injected so tests run instantly.
 
-import { describeFile, hasAutoTitle, noteOf, otherFile, prDescription, summarise } from "./describe.js";
+import { describeFile, hasAutoTitle, noteBelowOf, noteOf, otherFile, prDescription, summarise } from "./describe.js";
 import { gitBlobSha, GitHubError } from "./github-client.js";
 import { sortPages } from "./site-files.js";
 
@@ -231,11 +231,18 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
   }
 
   // Rewrites an open pull request's description from the branch, keeping your
-  // note (or setting `note`), and its title while it is still the generated
-  // one (or setting `title`). `pr` should be fresh from GitHub.
+  // note (or setting `note`) and your text below the changes, and its title
+  // while it is still the generated one (or setting `title`). `pr` should be
+  // fresh from GitHub; null for `title` or `note` keeps what it has.
   async function refreshPr(pr, { title = null, note = null } = {}) {
     const described = await describeBranch();
-    const body = prDescription({ note: note ?? noteOf(pr.body), files: described.files, screenshots: described.screenshots, autoTitle: described.title });
+    const body = prDescription({
+      note: note ?? noteOf(pr.body),
+      below: noteBelowOf(pr.body),
+      files: described.files,
+      screenshots: described.screenshots,
+      autoTitle: described.title,
+    });
     const nextTitle = title && title.trim() ? title.trim() : hasAutoTitle(pr, PR_TITLE) ? described.title : pr.title;
     const updated = await client.updatePr(pr.number, { title: nextTitle, body });
     return { ...pr, ...updated, title: nextTitle, body };
@@ -450,7 +457,9 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
 
   // Publish: baselines when needed, then the pull request, titled `title` (or
   // the generated title) with `note` above the generated list of changes.
-  async function publish({ title = "", note = "" } = {}) {
+  // They are what the Publish dialog changed: null for what it didn't, so an
+  // open pull request keeps its own title and note (changed on GitHub, say).
+  async function publish({ title = null, note = null } = {}) {
     return exclusive(async () => {
       const comparison = await readBranchState();
       if (comparison.ahead_by === 0) {
@@ -475,12 +484,12 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
         }
         const autoTitle = described ? described.title : PR_TITLE;
         const body = described
-          ? prDescription({ note, files: described.files, screenshots: described.screenshots, autoTitle })
-          : [note.trim(), prBody(state.changedPaths)].filter(Boolean).join("\n\n");
+          ? prDescription({ note: note ?? "", files: described.files, screenshots: described.screenshots, autoTitle })
+          : [(note ?? "").trim(), prBody(state.changedPaths)].filter(Boolean).join("\n\n");
         // A new pull request starts CI itself; dispatching as well would run it twice.
-        pr = await client.createPr({ title: title.trim() || autoTitle, body });
+        pr = await client.createPr({ title: (title && title.trim()) || autoTitle, body });
       } else {
-        pr = await refreshPr(await client.getPr(pr.number), { title, note: note.trim() ? note : null });
+        pr = await refreshPr(await client.getPr(pr.number), { title, note });
         // Commits pushed by the baseline workflow's GITHUB_TOKEN start no workflow.
         if (movedByBot) await client.dispatchWorkflow(target.ciWorkflow, target.branch);
       }
@@ -653,8 +662,8 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
   }
 
   // Your title and note for the open pull request, with the list of changes
-  // regenerated below the note.
-  async function updatePullRequest({ title = "", note = "" } = {}) {
+  // regenerated below the note. Null for either keeps what it has on GitHub.
+  async function updatePullRequest({ title = null, note = null } = {}) {
     return exclusive(async () => {
       const pr = await refreshPr(await client.getPr(state.pr.number), { title, note });
       set({ pr, notice: "Updated the pull request's title and description." });

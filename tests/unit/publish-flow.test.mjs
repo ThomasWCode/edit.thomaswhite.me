@@ -116,6 +116,38 @@ test("the pull request: your note survives saves, a generated title follows them
   assert.ok(legacy.body.startsWith("<!-- editor:changes -->"), "the old generated text is not kept as a note");
 });
 
+test("the pull request keeps all of your text: below the list, and a title or note changed on GitHub", async () => {
+  const { fake, client, flow } = await setup();
+  const loaded = await flow.load();
+  await flow.save([await change("physics.html", "Thinking about things", "Thinking about stuff", loaded.files.get("physics.html"), fake)], "one");
+  await flow.publish({ note: "My note above." });
+  const pull = () => fake.pulls()[0];
+  const below = "Text added below the list on GitHub.\n\n- with a list";
+  await client.updatePr(1, { body: `${pull().body}\n${below}\n`, title: "Title set on GitHub" });
+
+  await flow.save([await change("index.html", "Pick whatever", "Pick anything", loaded.files.get("index.html"), fake, "edits")], "two");
+  assert.ok(pull().body.startsWith("My note above.\n\n<!-- editor:changes -->"));
+  assert.ok(pull().body.includes(`<!-- /editor:changes -->\n\n${below}\n\nEdits made at`), "your text below the list stays below it, above the footer");
+  assert.match(pull().body, /\*\*Home\*\* \(`index\.html`\)/, "the list is refreshed");
+  assert.equal(pull().title, "Title set on GitHub");
+
+  // The dialog sends only what was changed in it: null keeps GitHub's title and note.
+  await client.updatePr(1, { title: "Changed on GitHub again", body: pull().body.replace("My note above.", "A note changed on GitHub.") });
+  await flow.updatePullRequest({ title: null, note: null });
+  assert.equal(pull().title, "Changed on GitHub again");
+  assert.ok(pull().body.startsWith("A note changed on GitHub.\n\n"));
+  assert.ok(pull().body.includes(below));
+  await flow.publish({ title: null, note: null });
+  assert.equal(pull().title, "Changed on GitHub again", "a Publish onto the open pull request too");
+  assert.ok(pull().body.startsWith("A note changed on GitHub.\n\n"));
+
+  // What was changed in the dialog is sent, an emptied note included.
+  await flow.updatePullRequest({ title: "Set in the dialog", note: "" });
+  assert.equal(pull().title, "Set in the dialog");
+  assert.ok(pull().body.startsWith("<!-- editor:changes -->"), "the note was emptied");
+  assert.ok(pull().body.includes(below), "your text below the list stays");
+});
+
 test("a stale head is fine when only other files changed (the baseline bot's PNGs)", async () => {
   const { fake, flow } = await setup();
   const first = await flow.load();
