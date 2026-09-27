@@ -454,6 +454,23 @@ export async function createFakeGitHub({
       afterPush(body.base, sha, false);
       return json(201, { sha, commit: { message }, parents: [{ sha: base }, { sha: head }] });
     }],
+    // The commits that changed a path, newest first, from `sha` back: those
+    // whose blob for it differs from every parent's, as git's simplified
+    // history lists them.
+    ["GET", /^\/commits$/, (match, request, body, url) => {
+      const from = refs.get(url.searchParams.get("sha")) || url.searchParams.get("sha");
+      const path = url.searchParams.get("path");
+      const limit = Number(url.searchParams.get("per_page") || 30);
+      if (!commits.has(from)) return error(422, `No commit found for SHA: ${from}`);
+      const blobAt = (sha) => treeOf(sha).get(path);
+      const listed = [...ancestors(from)]
+        .map((sha) => commits.get(sha))
+        .filter((commit) => blobAt(commit.sha) !== undefined || commit.parents.some((parent) => blobAt(parent) !== undefined))
+        .filter((commit) => (commit.parents.length ? commit.parents.every((parent) => blobAt(parent) !== blobAt(commit.sha)) : blobAt(commit.sha) !== undefined))
+        .sort((a, b) => (a.author.date < b.author.date ? 1 : -1))
+        .slice(0, limit);
+      return json(200, listed.map((commit) => ({ sha: commit.sha, commit: { message: commit.message, tree: { sha: commit.tree }, author: commit.author }, parents: commit.parents.map((sha) => ({ sha })) })));
+    }],
     ["GET", /^\/commits\/([0-9a-f]+)\/check-runs$/, (match) => {
       const runs = checkRuns.filter((run) => run.head_sha === match[1]);
       runs.forEach(advanceRun);

@@ -6,15 +6,20 @@ import {
   draftAround,
   draftPhrase,
   hasWaitingVersion,
+  LIVE_CHANGED,
+  liveAsItWas,
+  liveChanged,
   liveSource,
   makeDraft,
   markDraft,
   publishDraft,
+  recordLive,
   refuseWaitingChange,
+  sourceHash,
   unitOf,
 } from "../../src/drafting.js";
 import { commitTextEdit, EditRejectedError, setAttribute, setNowUpdated } from "../../src/edits.js";
-import { blockText, buildPageModel, collapse, LOCK_REASONS, textOf } from "../../src/page-model.js";
+import { attribute, blockText, buildPageModel, collapse, LOCK_REASONS, textOf } from "../../src/page-model.js";
 import { blockKeyStarting, editBlock, loadModel, renderedSnapshot, typeInto } from "../support/fixtures.mjs";
 
 const draftsOf = (model, kind) => model.drafts.filter((draft) => draft.kind === kind);
@@ -56,12 +61,56 @@ test("a draft copy sits straight after the live element, which is locked until t
   const home = loadModel("index.html");
   const key = blockKeyStarting(home, "Pick whatever");
   const drafted = asDraft(home, editBlock(home, "Pick whatever", "interesting", "interesting today"));
-  assert.ok(drafted.source.includes("<p>Pick whatever sounds a bit interesting.</p>\n            <p data-draft=\"replace\">Pick whatever sounds a bit interesting today.</p>\n"));
+  const of = sourceHash("<p>Pick whatever sounds a bit interesting.</p>");
+  assert.ok(drafted.source.includes(`<p>Pick whatever sounds a bit interesting.</p>\n            <p data-draft="replace" data-draft-of="${of}">Pick whatever sounds a bit interesting today.</p>\n`));
   assert.equal(drafted.lockReasons.get(key), LOCK_REASONS.replaced, "the live paragraph is locked");
   const [copy] = draftsOf(drafted, "replace");
   const edited = editBlock(drafted, "Pick whatever sounds a bit interesting today", "today", "now");
   assert.equal(asDraft(drafted, edited), edited, "typing in the draft edits the draft");
   assert.ok(edited.nodeOf.get(copy.key));
+});
+
+test("a new version records its live element, and isn't published once that changes until it is recorded again", () => {
+  const home = loadModel("index.html");
+  const live = "<p>Pick whatever sounds a bit interesting.</p>";
+  const drafted = asDraft(home, editBlock(home, "Pick whatever", "interesting", "interesting today"));
+  const [copy] = draftsOf(drafted, "replace");
+  const of = attribute(copy.node, "data-draft-of");
+  assert.match(of, /^[0-9a-f]{8}$/);
+  assert.equal(of, sourceHash(live), "a short hash of the live element's source");
+  assert.equal(liveChanged(drafted, copy.key), false);
+
+  // main changes another word of the live paragraph, and it is merged in.
+  const merged = loadModel("index.html", drafted.source.replace(live, "<p>Pick anything that sounds a bit interesting.</p>"));
+  const [waiting] = draftsOf(merged, "replace");
+  assert.equal(liveChanged(merged, waiting.key), true);
+  assert.throws(() => publishDraft(merged, waiting.key), (error) => error instanceof EditRejectedError && error.message === LIVE_CHANGED);
+  assert.deepEqual(liveAsItWas(drafted.source, "index.html", of), { source: live, text: "Pick whatever sounds a bit interesting." }, "found in the version it was made from");
+  assert.equal(liveAsItWas(merged.source, "index.html", of), null, "and not in the changed one");
+
+  // Tom carries main's change into the new version, records the live one as it is now, and publishes.
+  const carried = editBlock(merged, "Pick whatever sounds a bit interesting today", "Pick whatever sounds", "Pick anything that sounds");
+  const key = draftsOf(carried, "replace")[0].key;
+  assert.equal(liveChanged(carried, key), true, "typing in the new version records nothing");
+  const recorded = recordLive(carried, key);
+  assert.equal(liveChanged(recorded, key), false);
+  assert.equal(recorded.source.length, carried.source.length, "only the recorded hash changed");
+  const published = publishDraft(recorded, key);
+  assert.ok(published.source.includes("<p>Pick anything that sounds a bit interesting today.</p>"), "both changes are live");
+  assert.ok(!published.source.includes("data-draft"), "the marker and the record go");
+  const expected = merged.source.replace(
+    `<p>Pick anything that sounds a bit interesting.</p>\n            <p data-draft="replace" data-draft-of="${of}">Pick whatever sounds a bit interesting today.</p>`,
+    "<p>Pick anything that sounds a bit interesting today.</p>",
+  );
+  assert.notEqual(expected, merged.source);
+  assert.equal(published.source, expected, "exactly the live paragraph with both changes");
+
+  // A new version with no record can't be told apart from a changed one: it waits too.
+  const unrecorded = loadModel("index.html", drafted.source.replace(` data-draft-of="${of}"`, ""));
+  const bare = draftsOf(unrecorded, "replace")[0];
+  assert.equal(liveChanged(unrecorded, bare.key), true);
+  assert.throws(() => publishDraft(unrecorded, bare.key), EditRejectedError);
+  assert.equal(liveChanged(recordLive(unrecorded, bare.key), bare.key), false);
 });
 
 test("links, the Now month and captions: the smallest whole element is the draft", () => {
@@ -71,7 +120,8 @@ test("links, the Now month and captions: the smallest whole element is the draft
   const drafted = asDraft(home, direct);
   const [copy] = draftsOf(drafted, "replace");
   assert.equal(copy.node.tagName, "a", "a link's address drafts just the link");
-  assert.ok(drafted.source.includes('<a href="/physics/#reading">more of what I read</a><a data-draft="replace" href="/physics/#questions">more of what I read</a>'));
+  const of = sourceHash('<a href="/physics/#reading">more of what I read</a>');
+  assert.ok(drafted.source.includes(`<a href="/physics/#reading">more of what I read</a><a data-draft="replace" data-draft-of="${of}" href="/physics/#questions">more of what I read</a>`));
   assert.equal(liveSource(drafted), liveSource(home));
   assert.equal(publishDraft(drafted, copy.key).source, direct.source);
 

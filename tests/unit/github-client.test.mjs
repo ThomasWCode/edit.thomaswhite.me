@@ -188,7 +188,7 @@ test("pull request, checks, workflow and merge calls use the target's branch nam
     new Response(null, { status: 204 }),
     json(200, { workflow_runs: [{ id: 1 }] }),
     json(200, { merged: true, sha: "m" }),
-    json(422, { message: "Reference does not exist" }),
+    json(200, { ref: "refs/heads/edits", object: { sha: "m" } }),
     json(200, { workflow_runs: [{ name: "Publish the live site" }, { name: "pages-build-deployment" }, { name: "Test suite" }] }),
   ]);
   assert.deepEqual(await client.findOpenPr(), { number: 7 });
@@ -197,7 +197,7 @@ test("pull request, checks, workflow and merge calls use the target's branch nam
   assert.equal(await client.dispatchWorkflow("update-visual-baselines.yml", "edits"), null);
   assert.deepEqual(await client.listWorkflowRuns("update-visual-baselines.yml", { branch: "edits" }), [{ id: 1 }]);
   assert.deepEqual(await client.mergePr(8, "head"), { merged: true, sha: "m" });
-  await client.deleteBranch("edits");
+  await client.updateRef("edits", "m");
   assert.deepEqual(
     (await client.deployRuns()).map((run) => run.name),
     ["Publish the live site", "pages-build-deployment"],
@@ -212,12 +212,13 @@ test("pull request, checks, workflow and merge calls use the target's branch nam
     "POST /actions/workflows/update-visual-baselines.yml/dispatches",
     "GET /actions/workflows/update-visual-baselines.yml/runs?per_page=10&branch=edits&event=workflow_dispatch",
     "PUT /pulls/8/merge",
-    "DELETE /git/refs/heads/edits",
+    "PATCH /git/refs/heads/edits",
     "GET /actions/runs?branch=main&per_page=10",
   ]);
   assert.deepEqual(calls[1].body, { title: "Text edits from the editor", head: "edits", base: "main", body: "Pages changed" });
   assert.deepEqual(calls[3].body, { ref: "edits" });
   assert.deepEqual(calls[5].body, { merge_method: "merge", sha: "head" });
+  assert.deepEqual(calls[6].body, { sha: "m", force: false }, "a fast-forward only, never a force");
 });
 
 test("mergeBranch merges one branch into another with no pull request", async () => {
@@ -232,6 +233,19 @@ test("mergeBranch merges one branch into another with no pull request", async ()
   assert.deepEqual(calls[0].body, { base: "edits", head: "main", commit_message: "Merge main into edits" });
   assert.equal(await client.mergeBranch("edits", "main", "again"), null, "edits has main's changes already");
   await assert.rejects(client.mergeBranch("edits", "main", "clash"), (error) => error instanceof GitHubError && error.code === "conflict");
+});
+
+test("listCommits and getTreeFiles read a file's history", async () => {
+  const { client, calls } = setup([
+    json(200, [{ sha: "c1", commit: { tree: { sha: "t1" } } }]),
+    json(200, { tree: [{ path: "blog/x y.html", type: "blob", sha: "b1" }, { path: "blog", type: "tree", sha: "t2" }], truncated: false }),
+  ]);
+  assert.deepEqual(await client.listCommits({ sha: "head", path: "blog/x y.html", perPage: 5 }), [{ sha: "c1", commit: { tree: { sha: "t1" } } }]);
+  assert.deepEqual([...(await client.getTreeFiles("t1"))], [["blog/x y.html", "b1"]]);
+  assert.deepEqual(
+    calls.map((call) => `${call.method} ${call.url.replace(REPO, "")}`),
+    ["GET /commits?sha=head&path=blog%2Fx+y.html&per_page=5", "GET /git/trees/t1?recursive=1"],
+  );
 });
 
 test("gitBlobSha matches git hash-object", async () => {

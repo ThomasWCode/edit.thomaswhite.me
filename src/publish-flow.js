@@ -5,7 +5,12 @@
 // request is already open (then CI runs on the new commit, as on any push).
 // Publish: refresh the visual baselines on `edits` when a captured page
 // changed, open the pull request (which starts CI), wait for the required
-// checks, then merge with a merge commit and delete `edits`.
+// checks, then merge with a merge commit and move `edits` up to the merge.
+//
+// `edits` is never deleted. Holding nothing main lacks, it is moved up to main
+// by a fast-forward, which GitHub refuses if a save landed on it meanwhile, so
+// no save is ever lost to it; the tab then works as if there were no `edits`
+// (`onBranch` false), loading main and saving from main's head.
 //
 // Every write re-reads the ref it depends on first. Stale work is detected per
 // file: if `edits` moved since the page was loaded, a file whose blob is
@@ -24,7 +29,7 @@
 // One mutation runs at a time (`busy`). The UI renders `state` and calls the
 // methods; `sleep` and `now` are injected so tests run instantly.
 
-import { describeFile, hasAutoTitle, noteOf, otherFile, prDescription, summarise } from "./describe.js";
+import { describeFile, hasAutoTitle, noteBelowOf, noteOf, otherFile, prDescription, summarise } from "./describe.js";
 import { gitBlobSha, GitHubError } from "./github-client.js";
 import { sortPages } from "./site-files.js";
 
@@ -39,11 +44,14 @@ const UPDATE_TIMEOUT_MS = 60_000;
 const MERGEABLE_RETRIES = 5;
 
 export class SaveConflictError extends Error {
-  constructor(conflicts, head) {
+  // `gone`: the conflicting files that are no longer on GitHub at all
+  // (renamed or deleted there).
+  constructor(conflicts, head, gone = []) {
     super(`${conflicts.join(", ")} changed on GitHub since this tab loaded ${conflicts.length === 1 ? "it" : "them"}.`);
     this.name = "SaveConflictError";
     this.conflicts = conflicts;
     this.head = head;
+    this.gone = gone;
   }
 }
 
@@ -207,12 +215,34 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
     return { files, screenshots, title: files.length ? summarise(files) : PR_TITLE };
   }
 
+  // Earlier versions of a file, newest first, from the commits that changed it
+  // up to the head this tab loaded: `match(text)` is tried on each (at most
+  // `limit` commits), and the first answer that isn't null returned. Only reads.
+  async function searchHistory(path, match, limit = 20) {
+    const seen = new Set();
+    for (const listed of await client.listCommits({ sha: state.head, path, perPage: limit })) {
+      const blob = (await client.getTreeFiles(listed.commit.tree.sha)).get(path);
+      if (!blob || seen.has(blob)) continue;
+      seen.add(blob);
+      const found = match(await client.getBlobText(blob));
+      if (found !== null && found !== undefined) return found;
+    }
+    return null;
+  }
+
   // Rewrites an open pull request's description from the branch, keeping your
-  // note (or setting `note`), and its title while it is still the generated
-  // one (or setting `title`). `pr` should be fresh from GitHub.
+  // note (or setting `note`) and your text below the changes, and its title
+  // while it is still the generated one (or setting `title`). `pr` should be
+  // fresh from GitHub; null for `title` or `note` keeps what it has.
   async function refreshPr(pr, { title = null, note = null } = {}) {
     const described = await describeBranch();
-    const body = prDescription({ note: note ?? noteOf(pr.body), files: described.files, screenshots: described.screenshots, autoTitle: described.title });
+    const body = prDescription({
+      note: note ?? noteOf(pr.body),
+      below: noteBelowOf(pr.body),
+      files: described.files,
+      screenshots: described.screenshots,
+      autoTitle: described.title,
+    });
     const nextTitle = title && title.trim() ? title.trim() : hasAutoTitle(pr, PR_TITLE) ? described.title : pr.title;
     const updated = await client.updatePr(pr.number, { title: nextTitle, body });
     return { ...pr, ...updated, title: nextTitle, body };
@@ -228,23 +258,51 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
     return comparison;
   }
 
-  // Loads the branch the editor works on: `edits` if it exists, else main.
-  // An `edits` holding nothing main lacks, with no pull request open, is
-  // deleted first: a pull request merged on GitHub itself leaves its branch
-  // behind, and loading it would show an older copy of the site. An `edits`
-  // with saves that main has moved on from gets main's changes first, when
-  // `autoUpdate` says nothing is unsaved (see the top of this file).
+  // Whether `edits` holds saves main lacks, read again.
+  async function branchHoldsSaves() {
+    const head = await client.getRef(target.branch);
+    return Boolean(head) && (await client.compare(target.base, head)).ahead_by > 0;
+  }
+
+  // Moves an `edits` that holds nothing main lacks (`seen`, as `comparison`
+  // found it) up to main's head: a fast-forward, never a force or a delete.
+  // GitHub refuses it if a save landed on edits meanwhile, and anything else
+  // that stops it (the network, a permission) leaves edits as it was. Either
+  // way edits is read again: holding saves now, it is loaded as it is.
+  // Returns { branchHead, baseHead }, branchHead null when edits holds
+  // nothing main lacks: the tab then loads main at baseHead.
+  async function catchUp(seen, comparison) {
+    const baseHead = await client.getRef(target.base);
+    if (seen === baseHead) return { branchHead: null, baseHead };
+    try {
+      await client.updateRef(target.branch, baseHead);
+      return { branchHead: null, baseHead };
+    } catch (error) {
+      if (!(error instanceof GitHubError) || error.code === "unauthorized") throw error;
+    }
+    const now = await client.getRef(target.branch);
+    const again = !now || now === seen ? comparison : await client.compare(target.base, now);
+    return now && again.ahead_by > 0 ? { branchHead: now, baseHead: null } : { branchHead: null, baseHead };
+  }
+
+  // Loads the branch the editor works on: `edits` when it holds saves main
+  // lacks or a pull request is open from it, else main. An `edits` holding
+  // nothing main lacks, with no pull request open (a pull request merged on
+  // GitHub itself leaves it so), is moved up to main first (catchUp), and the
+  // tab works as if there were no `edits`. An `edits` with saves that main
+  // has moved on from gets main's changes first, when `autoUpdate` says
+  // nothing is unsaved (see the top of this file).
   async function load({ autoUpdate = false } = {}) {
     return exclusive(async () => {
       set({ phase: "loading", notice: "" });
       let branchHead = await client.getRef(target.branch);
       const pr = branchHead ? await client.findOpenPr() : null;
       let notice = "";
+      let baseHead = null;
       if (branchHead && !pr) {
         const comparison = await client.compare(target.base, branchHead);
         if (comparison.ahead_by === 0) {
-          await client.deleteBranch(target.branch);
-          branchHead = null;
+          ({ branchHead, baseHead } = await catchUp(branchHead, comparison));
         } else if (comparison.behind_by > 0 && autoUpdate) {
           const count = `${comparison.behind_by} newer ${comparison.behind_by === 1 ? "commit" : "commits"}`;
           const brought = `Brought ${target.base}'s ${count} into your saved edits, so you're editing the site as it is now.`;
@@ -264,7 +322,7 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
           }
         }
       }
-      const head = branchHead || (await client.getRef(target.base));
+      const head = branchHead || baseHead || (await client.getRef(target.base));
       if (!head) throw new GitHubError({ status: 404, code: "not_found", message: `${target.base} was not found.` });
       const { files } = await client.getCommitTree(head);
       set({ head, onBranch: Boolean(branchHead), files, pr, phase: pr ? "checking" : "ready", notice });
@@ -282,49 +340,68 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
   // is left out (a save whose response was lost, then retried), so a retry
   // never commits the same change twice. Once the branch has moved, the save
   // has happened: the follow-up reads can fail without failing it.
+  //
+  // Without saves of its own on `edits` (onBranch false), the tab saves from
+  // main's head, as on a new `edits`: an `edits` still holding nothing main
+  // lacks then moves up to the new commit by the same fast-forward.
   async function save(changes, message) {
     return exclusive(async () => {
       set({ phase: "saving", notice: "" });
       const newShas = new Map();
       for (const change of changes) newShas.set(change.path, await gitBlobSha(change.text));
       let sha;
+      let parent;
+      let committed = false;
+      // Whether edits holds saves main lacks, as far as this save has read.
+      let holds = state.onBranch;
       let tree = null;
       for (let attempt = 1; ; attempt += 1) {
         let head = await client.getRef(target.branch);
+        parent = head;
+        holds = state.onBranch;
         tree = null;
-        if (!head) {
+        if (!head || !state.onBranch) {
           const baseHead = await client.getRef(target.base);
-          head = await client.createBranch(target.branch, baseHead);
+          if (!head) head = parent = await client.createBranch(target.branch, baseHead);
+          else if (head !== baseHead) {
+            holds = (await client.compare(target.base, head)).ahead_by > 0;
+            if (!holds) parent = baseHead;
+          }
         }
-        // Each change is judged against the head's own tree when edits moved,
-        // else against the tree held for it. A change made to another version
-        // of its file than that (a tab whose reload failed after main was
-        // brought in, say) is a conflict either way, never an overwrite.
-        if (head !== state.head) ({ files: tree } = await client.getCommitTree(head));
+        // Each change is judged against the parent's own tree when it isn't
+        // the commit the files were loaded from (edits moved), else against
+        // the tree held for it. A change made to another version of its file
+        // than that (a tab whose reload failed after main was brought in, say)
+        // is a conflict either way, never an overwrite.
+        if (parent !== state.head) ({ files: tree } = await client.getCommitTree(parent));
         const judged = tree || state.files;
         const conflicts = [];
+        const gone = [];
         const pending = [];
         for (const change of changes) {
           const current = judged.get(change.path) ?? null;
           if (current === newShas.get(change.path)) continue;
-          if (current !== (change.loadedSha ?? null)) conflicts.push(change.path);
-          else pending.push(change);
+          if (current !== (change.loadedSha ?? null)) {
+            conflicts.push(change.path);
+            if (current === null) gone.push(change.path);
+          } else pending.push(change);
         }
         if (conflicts.length) {
           set({ phase: state.pr ? "checking" : "ready" });
-          throw new SaveConflictError(conflicts, head);
+          throw new SaveConflictError(conflicts, head, gone);
         }
         if (!pending.length) {
-          sha = head;
+          sha = parent;
           break;
         }
         try {
           ({ sha } = await client.commitFiles({
             branch: target.branch,
-            parentSha: head,
+            parentSha: parent,
             files: pending.map(({ path, text }) => ({ path, content: text })),
             message,
           }));
+          committed = true;
           break;
         } catch (error) {
           if (error instanceof GitHubError && error.code === "not_fast_forward" && attempt < 3) continue;
@@ -335,11 +412,14 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
 
       const files = new Map(tree || state.files);
       for (const [path, blob] of newShas) files.set(path, blob);
-      set({ head: sha, onBranch: true, files });
+      // A save found already on edits (its answer lost the first time) is on
+      // it all the same.
+      set({ head: sha, onBranch: committed || holds, files });
       let pr = state.pr;
       let notice;
       try {
-        await readBranchState();
+        // edits read again: nothing main lacks is as if there were no edits.
+        set((await readBranchState()).ahead_by ? { onBranch: true } : { onBranch: false, aheadBy: 0, behindBy: 0, changedPaths: [] });
         pr = pr || (await client.findOpenPr());
         if (pr) pr = await refreshPr(await client.getPr(pr.number));
         notice = pr
@@ -385,7 +465,9 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
 
   // Publish: baselines when needed, then the pull request, titled `title` (or
   // the generated title) with `note` above the generated list of changes.
-  async function publish({ title = "", note = "" } = {}) {
+  // They are what the Publish dialog changed: null for what it didn't, so an
+  // open pull request keeps its own title and note (changed on GitHub, say).
+  async function publish({ title = null, note = null } = {}) {
     return exclusive(async () => {
       const comparison = await readBranchState();
       if (comparison.ahead_by === 0) {
@@ -410,12 +492,12 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
         }
         const autoTitle = described ? described.title : PR_TITLE;
         const body = described
-          ? prDescription({ note, files: described.files, screenshots: described.screenshots, autoTitle })
-          : [note.trim(), prBody(state.changedPaths)].filter(Boolean).join("\n\n");
+          ? prDescription({ note: note ?? "", files: described.files, screenshots: described.screenshots, autoTitle })
+          : [(note ?? "").trim(), prBody(state.changedPaths)].filter(Boolean).join("\n\n");
         // A new pull request starts CI itself; dispatching as well would run it twice.
-        pr = await client.createPr({ title: title.trim() || autoTitle, body });
+        pr = await client.createPr({ title: (title && title.trim()) || autoTitle, body });
       } else {
-        pr = await refreshPr(await client.getPr(pr.number), { title, note: note.trim() ? note : null });
+        pr = await refreshPr(await client.getPr(pr.number), { title, note });
         // Commits pushed by the baseline workflow's GITHUB_TOKEN start no workflow.
         if (movedByBot) await client.dispatchWorkflow(target.ciWorkflow, target.branch);
       }
@@ -498,11 +580,18 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
         }
         throw error;
       }
-      // Delete edits only if it is still the head that was merged: another tab
-      // may have saved on top meanwhile, and deleting would lose that commit.
-      const branchHead = await client.getRef(target.branch);
-      const newerSaves = Boolean(branchHead) && branchHead !== pr.head.sha;
-      if (branchHead && !newerSaves) await client.deleteBranch(target.branch);
+      // edits moves up to the merge, a fast-forward from the head that was
+      // merged. GitHub refuses it when another tab or device saved on top
+      // meanwhile: those saves stay on edits for the next Publish. Anything
+      // else that stops it leaves edits as it was, holding nothing main lacks,
+      // for the next load to move up.
+      let newerSaves = false;
+      try {
+        await client.updateRef(target.branch, result.sha);
+      } catch (error) {
+        if (!(error instanceof GitHubError)) throw error;
+        newerSaves = error.code === "not_fast_forward" || (await branchHoldsSaves().catch(() => false));
+      }
       const host = new URL(target.assets).host;
       set({
         phase: "published",
@@ -581,8 +670,8 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
   }
 
   // Your title and note for the open pull request, with the list of changes
-  // regenerated below the note.
-  async function updatePullRequest({ title = "", note = "" } = {}) {
+  // regenerated below the note. Null for either keeps what it has on GitHub.
+  async function updatePullRequest({ title = null, note = null } = {}) {
     return exclusive(async () => {
       const pr = await refreshPr(await client.getPr(state.pr.number), { title, note });
       set({ pr, notice: "Updated the pull request's title and description." });
@@ -596,6 +685,7 @@ export function createPublishFlow({ client, target, sleep = (ms) => new Promise(
     save,
     publish,
     describeBranch,
+    searchHistory,
     updatePullRequest,
     refreshChecks,
     merge,

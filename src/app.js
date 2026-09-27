@@ -13,9 +13,12 @@ import {
   draftAround,
   draftPhrase,
   hasWaitingVersion,
+  liveAsItWas,
+  liveChanged,
   makeDraft,
   markDraft,
   publishDraft,
+  recordLive,
   refuseWaitingChange,
   WAITING,
 } from "./drafting.js";
@@ -34,7 +37,7 @@ import {
 } from "./edits.js";
 import { GitHubError } from "./github-client.js";
 import { newPostSource, normaliseMarkdown, recordSlugs } from "./markdown-files.js";
-import { attribute, blockText, buildPageModel, collapse, EDITOR_DRAFT_KINDS, pageTitle, textOf } from "./page-model.js";
+import { attribute, blockText, buildPageModel, collapse, EDITOR_DRAFT_KINDS, pageTitle, previousElementSibling, textOf } from "./page-model.js";
 import { createPreview } from "./preview.js";
 import { BusyError, createPublishFlow, SaveConflictError } from "./publish-flow.js";
 import { fallbackLabel, isPublishedHtml, labelFromTitle, liveUrl, markdownFiles, readOnlyReason, sortPages } from "./site-files.js";
@@ -140,7 +143,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   const current = () => (currentPath ? entries.get(currentPath) : null);
   const isDirty = (entry) => entry.status === "ready" && (entry.isNew || entry.working !== entry.original);
   const dirtyEntries = () => [...entries.values()].filter(isDirty);
-  const pageEntries = () => [...entries.values()].filter((entry) => entry.kind === "page");
+  const pageEntries = () => [...entries.values()].filter((entry) => entry.kind === "page" && entry.status !== "gone");
 
   function makeEntry(path, kind, sha) {
     return {
@@ -168,6 +171,9 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   }
 
   // Builds the list from a tree, keeping loaded files whose blob is unchanged.
+  // Unsaved edits to a file that is no longer in the tree (renamed or deleted
+  // on GitHub) are kept, under "No longer on GitHub", until they are
+  // discarded; that file is never saved, so never recreated.
   function syncEntries(files) {
     const paths = [...files.keys()];
     const next = new Map();
@@ -182,14 +188,29 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     for (const path of markdown.blogSources) keep(path, "markdown");
     for (const path of store.paths()) {
       const record = store.load(path);
-      if (!next.has(path) && record && record.isNew) {
+      if (next.has(path) || !record) continue;
+      if (record.isNew) {
         const entry = entries.get(path) || makeEntry(path, "markdown", null);
         entry.isNew = true;
         next.set(path, entry);
+      } else {
+        const entry = goneEntry(path, record);
+        if (entry) next.set(path, entry);
+        else store.remove(path);
       }
     }
     entries.clear();
     for (const [path, entry] of next) entries.set(path, entry);
+  }
+
+  // A file no longer on GitHub, with the edits kept for it: every set of
+  // { original, working } in its record, the latest last. Null when the
+  // record holds none.
+  function goneEntry(path, record) {
+    const sets = [...staleSets(record.stale), ...(record.working !== record.original ? [{ original: record.original, working: record.working }] : [])];
+    if (!sets.length) return null;
+    const entry = makeEntry(path, path.endsWith(".html") ? "page" : "markdown", null);
+    return Object.assign(entry, { status: "gone", stale: sets, working: sets[sets.length - 1].working });
   }
 
   function buildModel(entry, text) {
@@ -197,7 +218,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   }
 
   async function ensureLoaded(entry) {
-    if (entry.status === "ready" || entry.status === "error") return entry;
+    if (entry.status === "ready" || entry.status === "error" || entry.status === "gone") return entry;
     if (entry.loading) return entry.loading;
     entry.status = "loading";
     entry.loading = (async () => {
@@ -335,6 +356,15 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     entry.log.push({ id: `${generation}:action:${entry.log.length}`, label, before: null, after: null, ...extra });
   }
 
+  // The part of a log made after `sent` (the log when Save was pressed): new
+  // items, and a block changed again since, from the text that was saved.
+  function unsavedLog(log, sent) {
+    const saved = new Map(sent.map((item) => [item.id, item]));
+    return log
+      .filter((item) => !saved.has(item.id) || saved.get(item.id).after !== item.after)
+      .map((item) => (saved.has(item.id) ? { ...item, before: saved.get(item.id).after } : item));
+  }
+
   // Adding or removing a paragraph or list item shifts the keys after it, so
   // a key no longer names the same element in the file as loaded. The log
   // records it, and follows Undo, Save, Discard and reloads.
@@ -424,7 +454,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   async function applyOperation(label, operation, { reshapes = false, drafting = "copy", ...renderOptions } = {}) {
     preview.finishEditing();
     const entry = current();
-    if (!entry || entry.kind !== "page") return;
+    if (!entry || entry.kind !== "page" || entry.status !== "ready") return;
     let result;
     try {
       result = operation(entry.model);
@@ -562,8 +592,73 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
 
   async function runPublishDraft(key) {
     const kind = attribute(current().model.nodeOf.get(key), "data-draft");
+    // A new version whose live element changed since it was made waits: both are shown instead.
+    if (kind === "replace" && liveChanged(current().model, key)) {
+      await showLiveChanged(key);
+      return;
+    }
     const label = kind === "remove" ? "Removed content marked to remove" : kind === "replace" ? "Published a new version" : "Published a draft";
     await applyOperation(label, (model) => publishDraft(model, key), { reshapes: true, drafting: "none" });
+  }
+
+  async function runRecordLive(key) {
+    await applyOperation("Recorded the live version as it is now", (model) => recordLive(model, key), { drafting: "none" });
+  }
+
+  // A new version (at `key`) whose live element has changed since it was made,
+  // on main say: the live element as it was, as it is now, and the new
+  // version, as word runs, so the change can be carried into the new version
+  // by typing. Publishing waits until the live element is recorded as it is
+  // now. The version as it was is looked up in the file's history on GitHub.
+  async function showLiveChanged(key) {
+    const entry = current();
+    const draft = entry.model.nodeOf.get(key);
+    const live = previousElementSibling(draft);
+    const version = (node) => ({ text: collapse(textOf(node)), source: entry.model.source.slice(node.sourceCodeLocation.startOffset, node.sourceCodeLocation.endOffset) });
+    const now = version(live);
+    const mine = version(draft);
+    const recorded = attribute(draft, "data-draft-of");
+    const history = h("div", {}, h("p", { class: "small" }, "Looking up the live version as it was when this new version was made…"));
+    const shown = openDialog($("save-dialog"), {
+      title: "The live version has changed",
+      body: h(
+        "div",
+        {},
+        h("p", {}, "The live version before this new version has changed since the new version was made (in a Claude session, say). Publishing the new version now would undo that change, so it isn't published."),
+        history,
+        h("p", {}, "Carry the change into the new version by typing in it. Then record the live version as it is now, and publish."),
+      ),
+      actions: [
+        { label: "Close", value: null },
+        { label: "Record the live version as it is now", value: "record" },
+      ],
+    });
+    (async () => {
+      let was = null;
+      try {
+        if (recorded) was = await flow.searchHistory(entry.path, (text) => liveAsItWas(text, entry.path, recorded));
+      } catch {
+        was = null;
+      }
+      history.replaceChildren(
+        ...(was
+          ? [h("h3", {}, "What changed in the live version"), runsView(was, now), h("h3", {}, "Your new version, against the live version as it was"), runsView(was, mine)]
+          : [
+              h("p", { class: "small" }, "The live version as it was couldn't be found in the file's history."),
+              h("h3", {}, "Your new version, against the live version now"),
+              runsView(now, mine),
+            ]),
+      );
+    })();
+    if ((await shown) === "record") await runRecordLive(key);
+  }
+
+  // Word runs from one version of an element to another. When only markup
+  // differs (a link's address, say), the sources are compared instead.
+  function runsView(before, after) {
+    const [a, b] = before.text === after.text ? [before.source, after.source] : [before.text, after.text];
+    const runs = trimEqualRuns(wordDiff(a, b));
+    return h("p", { class: "change-words" }, runs.map((run) => h("span", { class: `word word--${run.type}` }, `${run.text} `)));
   }
 
   async function runDiscardDraft(key) {
@@ -709,6 +804,18 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     const entry = entries.get(path);
     renderFileList();
     renderStageBar();
+    if (entry.status === "gone") {
+      // Its edited text, to copy from; nothing here can be saved.
+      $("frame-wrap").hidden = true;
+      const editor = $("markdown-editor");
+      editor.hidden = false;
+      editor.value = entry.working;
+      editor.readOnly = true;
+      stageMessage("No longer on GitHub: your edited text, to copy from. It can't be saved here.", "warning");
+      renderPanel();
+      renderTopbar();
+      return;
+    }
     if (entry.status !== "ready") {
       stageMessage(`Loading ${entry.label}…`);
       $("frame-wrap").hidden = true;
@@ -739,6 +846,9 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     renderTopbar();
   }
 
+  // The Markdown box into its file, and into sessionStorage at once: typing
+  // otherwise reaches it only after a pause (the box's input handler).
+  let markdownTimer = null;
   function syncMarkdown() {
     const entry = current();
     if (!entry || entry.kind !== "markdown" || entry.status !== "ready") return;
@@ -746,8 +856,9 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     if (value !== entry.working) {
       pushUndo(entry);
       entry.working = value;
-      persist(entry);
     }
+    clearTimeout(markdownTimer);
+    persist(entry);
   }
 
   // ---- Checks and Save -------------------------------------------------------------
@@ -1049,33 +1160,51 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
 
   // `message` is { title, body } from the Save dialog; without one (saving the
   // other files after a conflict) the generated message is used.
+  //
+  // Typing goes on while GitHub answers. Each file keeps what it held when
+  // Save was pressed (`working`, `model`, the log and the undo steps then), so
+  // a file changed meanwhile keeps those changes, unsaved, on top of the text
+  // that was saved.
   async function doSave(dirty, message = null) {
     const changes = dirty.map((entry) => ({
       entry,
       path: entry.path,
       text: entry.kind === "markdown" ? normaliseMarkdown(entry.working) : entry.working,
       loadedSha: entry.isNew ? null : entry.loadedSha,
+      working: entry.working,
+      model: entry.model,
+      log: entry.log.map((item) => ({ ...item })),
+      undo: new Set(entry.undo),
     }));
     try {
       const { files } = await flow.save(
         changes.map(({ path, text, loadedSha }) => ({ path, text, loadedSha })),
         message ? commitText(message) : commitMessageFor(describeEntries(dirty)),
       );
-      for (const { entry, text } of changes) {
+      for (const change of changes) {
+        const { entry, text } = change;
         entry.loadedSha = files.get(entry.path);
         entry.original = text;
-        entry.working = text;
         entry.isNew = false;
-        if (entry.kind === "page") entry.originalModel = entry.model;
-        entry.undo = [];
-        entry.log = [];
+        if (entry.working === change.working) {
+          entry.working = text;
+          if (entry.kind === "page") entry.originalModel = entry.model;
+          entry.undo = [];
+          entry.log = [];
+        } else {
+          if (entry.kind === "page") entry.originalModel = change.model;
+          entry.undo = entry.undo.filter((step) => !change.undo.has(step)).map((step) => ({ ...step, log: unsavedLog(step.log, change.log) }));
+          entry.log = unsavedLog(entry.log, change.log);
+        }
         persist(entry);
       }
       generation += 1;
       toast(flow.state.notice || "Saved.", "success");
       const entry = current();
-      if (entry && entry.kind === "page") preview.setChangedKeys([]);
-      if (entry && entry.kind === "markdown") $("markdown-editor").value = entry.working;
+      if (entry && entry.kind === "page") preview.setChangedKeys(changedKeys(entry));
+      // The box is reset to the text saved only if nothing was typed in it since.
+      const saved = changes.find((change) => change.entry === entry);
+      if (entry && entry.kind === "markdown" && saved && $("markdown-editor").value === saved.working) $("markdown-editor").value = entry.working;
       renderFileList();
       renderPanel();
       renderTopbar();
@@ -1087,13 +1216,19 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   }
 
   async function resolveConflict(error, dirty) {
+    const gone = error.gone || [];
+    const changed = error.conflicts.filter((path) => !gone.includes(path));
     const choice = await openDialog($("confirm-dialog"), {
       title: "Changed on GitHub",
       body: h(
         "div",
         {},
-        h("p", {}, `${error.conflicts.join(", ")} changed on GitHub since this tab loaded ${error.conflicts.length === 1 ? "it" : "them"} (another device, or a Claude session).`),
+        changed.length ? h("p", {}, `${changed.join(", ")} changed on GitHub since this tab loaded ${changed.length === 1 ? "it" : "them"} (another device, or a Claude session).`) : null,
+        gone.length
+          ? h("p", {}, `${gone.join(", ")} ${gone.length === 1 ? "is" : "are"} no longer on GitHub: renamed or deleted there (in a Claude session, say). The editor won't recreate ${gone.length === 1 ? "it" : "them"}.`)
+          : null,
         h("p", {}, "Reload loads GitHub's version of those files and keeps your unsaved edits to them aside, to copy from. Your other files keep their edits."),
+        gone.length ? h("p", {}, "Edits to a file no longer on GitHub are listed under “No longer on GitHub” until you discard them.") : null,
       ),
       actions: [
         { label: "Cancel", value: null },
@@ -1143,15 +1278,19 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     try {
       const described = await flow.describeBranch();
       const pr = flow.state.pr;
-      fields = messageFields({
-        kind: "pr",
-        title: pr && pr.title ? pr.title : described.title,
-        body: pr ? noteOf(pr.body) : "",
-        changes: forAi(described.files),
-        titleLabel: "Pull request title",
-        bodyLabel: "Description",
-        bodyHint: "Optional: a note above the list of changes, which the editor adds and keeps up to date on each save.",
-      });
+      const opened = { title: pr && pr.title ? pr.title : described.title, note: pr ? noteOf(pr.body) : "" };
+      fields = {
+        ...messageFields({
+          kind: "pr",
+          title: opened.title,
+          body: opened.note,
+          changes: forAi(described.files),
+          titleLabel: "Pull request title",
+          bodyLabel: "Description",
+          bodyHint: "Optional: a note above the list of changes, which the editor adds and keeps up to date on each save.",
+        }),
+        opened,
+      };
     } catch {
       fields = null;
     }
@@ -1161,9 +1300,13 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     if (publishDialogOpen) renderPublishDialog();
   }
 
+  // What was changed in the title and note since the dialog opened; null for
+  // the rest, which stays as it is on GitHub (changed there meanwhile, say).
   const publishWords = () => {
-    const words = publishFields ? publishFields.read() : null;
-    return words ? { title: words.title, note: words.body } : {};
+    if (!publishFields) return {};
+    const words = publishFields.read();
+    const { opened } = publishFields;
+    return { title: words.title !== opened.title.trim() ? words.title : null, note: words.body !== opened.note.trim() ? words.body : null };
   };
 
   // Bringing main in changes files on edits: it needs everything saved, and
@@ -1343,7 +1486,12 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   const nothingUnsaved = () => !typing && store.paths().length === 0 && !dirtyEntries().length;
 
   // True once the files are reloaded; a failure is reported and false returned.
+  // The block being typed in, and the Markdown box, are finished first, so
+  // every word reaches the file it was typed in, and is kept aside with it if
+  // that file changed on GitHub.
   async function reload() {
+    preview.finishEditing();
+    syncMarkdown();
     try {
       const { files } = await flow.load({ autoUpdate: nothingUnsaved() });
       syncEntries(files);
@@ -1484,12 +1632,13 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   }
 
   function renderFileList() {
-    const lists = { page: $("page-list"), record: $("record-list"), blog: $("blog-source-list") };
+    const lists = { page: $("page-list"), record: $("record-list"), blog: $("blog-source-list"), gone: $("gone-list") };
     for (const list of Object.values(lists)) list.replaceChildren();
     for (const entry of entries.values()) {
-      const list = entry.kind === "page" ? lists.page : entry.path === target.markdown.record ? lists.record : lists.blog;
+      const list = entry.status === "gone" ? lists.gone : entry.kind === "page" ? lists.page : entry.path === target.markdown.record ? lists.record : lists.blog;
       const badges = [];
       if (isDirty(entry)) badges.push(h("span", { class: "file-badge file-badge--changed", title: "Unsaved changes" }, "edited"));
+      if (entry.status === "gone") badges.push(h("span", { class: "file-badge file-badge--changed", title: "Unsaved edits kept aside" }, "kept"));
       if (entry.model && entry.model.readOnly) badges.push(h("span", { class: "file-badge file-badge--locked", title: entry.model.readOnly }, "read-only"));
       else if (entry.model && entry.model.drafts.length) badges.push(h("span", { class: "file-badge file-badge--drafts", title: `${entry.model.drafts.length} drafts` }, String(entry.model.drafts.length)));
       if (entry.status === "error") badges.push(h("span", { class: "file-badge file-badge--locked" }, "error"));
@@ -1514,6 +1663,8 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     }
     if (!lists.record.children.length) lists.record.append(h("li", { class: "small" }, "No record file."));
     if (!lists.blog.children.length) lists.blog.append(h("li", { class: "small" }, "No blog sources yet."));
+    lists.gone.hidden = !lists.gone.children.length;
+    $("gone-heading").hidden = lists.gone.hidden;
   }
 
   function renderStageBar() {
@@ -1528,7 +1679,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     } else {
       live.hidden = true;
     }
-    $("width-toggle").hidden = entry.kind !== "page";
+    $("width-toggle").hidden = entry.kind !== "page" || entry.status === "gone";
   }
 
   // ---- The side panel ------------------------------------------------------------------
@@ -1537,6 +1688,10 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     const panel = $("panel");
     const entry = current();
     panel.replaceChildren();
+    if (entry && entry.status === "gone") {
+      panel.append(goneNotice(entry));
+      return;
+    }
     if (!entry || entry.status !== "ready") return;
     if (entry.kind === "markdown") {
       if (entry.stale) panel.append(staleNotice(entry));
@@ -1579,6 +1734,47 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
         renderPanel();
       }, { small: true, kind: "quiet" })),
     );
+  }
+
+  // A file no longer on GitHub: the edits kept for it, and Discard.
+  function goneNotice(entry) {
+    const view = () =>
+      openDialog($("save-dialog"), {
+        title: "Your edits to a file no longer on GitHub",
+        body: h(
+          "div",
+          {},
+          h("p", {}, `${entry.path} is no longer on GitHub. These are your unsaved edits to it. Copy what you need, then discard them.`),
+          entry.stale.map((set) => hunksView(set.original || "", set.working)),
+        ),
+        actions: [{ label: "Close", value: null }],
+      });
+    return h(
+      "section",
+      { class: "panel-section notice notice--warning" },
+      h("h2", {}, entry.label),
+      h(
+        "p",
+        {},
+        `${entry.path} is no longer on GitHub (renamed or deleted there, in a Claude session, say), so your unsaved edits to it weren't applied, and the editor won't save or recreate it. They're kept until you discard them: copy what you need into the file where it lives now.`,
+      ),
+      h("div", { class: "button-row" }, button("Show them", view, { small: true }), button("Discard them", () => discardGone(entry), { small: true, kind: "quiet" })),
+    );
+  }
+
+  async function discardGone(entry) {
+    const confirmed = await confirmAction($("confirm-dialog"), {
+      title: "Discard these edits?",
+      message: `Your unsaved edits to ${entry.path}, which is no longer on GitHub, will be deleted from this tab. Copy anything you need first.`,
+      confirm: "Discard edits",
+      kind: "danger",
+    });
+    if (!confirmed) return;
+    store.remove(entry.path);
+    entries.delete(entry.path);
+    renderFileList();
+    if (currentPath === entry.path) await open(firstPagePath());
+    renderTopbar();
   }
 
   function blockPanel(entry, key) {
@@ -1643,6 +1839,17 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
           button(names.discard, () => runDiscardDraft(draftKey), { small: true, kind: around.kind === "remove" ? "quiet" : "danger" }),
         ),
       );
+      if (around.kind === "replace" && liveChanged(model, draftKey)) {
+        part.append(
+          h("p", { class: "notice notice--warning" }, "The live version has changed since this new version was made, so it isn't published yet. Carry the change into this version, then record the live version as it is now."),
+          h(
+            "div",
+            { class: "button-row" },
+            button("Show both", () => showLiveChanged(draftKey), { small: true }),
+            button("Record the live version", () => runRecordLive(draftKey), { small: true }),
+          ),
+        );
+      }
     } else if (!around) {
       const section = [block.node, ...ancestorsWithin(block.node, model.main)].find((node) => node.tagName === "section");
       const whole = h("div", { class: "button-row" }, button("Make this a draft", () => runMakeDraft(block.key, blockName(model, block.key).toLowerCase()), { small: true }));
@@ -1830,7 +2037,7 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
   async function goTo(path, key) {
     if (currentPath !== path) await open(path);
     const entry = current();
-    if (!entry || entry.kind !== "page" || !entry.model.nodeOf.has(key)) return;
+    if (!entry || entry.kind !== "page" || entry.status !== "ready" || !entry.model.nodeOf.has(key)) return;
     const kind = entry.model.blockByKey.has(key) ? "block" : "none";
     preview.select({ kind, key });
   }
@@ -1896,10 +2103,9 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
       };
     }
     const editor = $("markdown-editor");
-    let markdownTimer = null;
     editor.oninput = () => {
       const entry = current();
-      if (!entry || entry.kind !== "markdown") return;
+      if (!entry || entry.kind !== "markdown" || entry.status !== "ready") return;
       clearTimeout(markdownTimer);
       entry.working = editor.value;
       renderTopbar();

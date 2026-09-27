@@ -645,10 +645,11 @@ function changesSection(files, screenshots) {
 const markable = (title) => title.replace(/-{2,}/g, "–");
 
 // The pull request's description: your note, then the changes between markers
-// the editor refreshes on each save, then the footer and, in a comment, the
-// title the editor generated (so a title you changed is never replaced).
-export function prDescription({ note = "", files, screenshots = [], autoTitle }) {
-  const parts = [note.trim(), changesSection(files, screenshots), FOOTER, `<!-- editor:title ${markable(autoTitle)} -->`];
+// the editor refreshes on each save, then any text of yours below them, then
+// the footer and, in a comment, the title the editor generated (so a title you
+// changed is never replaced).
+export function prDescription({ note = "", below = "", files, screenshots = [], autoTitle }) {
+  const parts = [note.trim(), changesSection(files, screenshots), below.trim(), FOOTER, `<!-- editor:title ${markable(autoTitle)} -->`];
   return `${parts.filter(Boolean).join("\n\n")}\n`;
 }
 
@@ -660,6 +661,19 @@ export function noteOf(body) {
   if (start >= 0) return body.slice(0, start).trim();
   if (body.startsWith(OLD_BODY_START)) return "";
   return body.replace(TITLE_MARK, "").replace(FOOTER, "").trim();
+}
+
+// Your text below the changes (added on GitHub, say): everything after their
+// end marker but the footer and the title comment the editor writes there.
+export function noteBelowOf(body) {
+  const end = body ? body.indexOf(CHANGES_END) : -1;
+  if (end < 0) return "";
+  return body
+    .slice(end + CHANGES_END.length)
+    .replace(TITLE_MARK, "")
+    .replace(FOOTER, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export function autoTitleOf(body) {

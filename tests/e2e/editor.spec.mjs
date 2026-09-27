@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { sourceHash } from "../../src/drafting.js";
 import { gitBlobSha } from "../../src/github-client.js";
 import { createFake, frame, frameReady, openEditor, readFixture, save, typeAtEnd } from "./support.mjs";
 
@@ -184,7 +185,7 @@ test("the Record tab edits docs/record.md as plain text", async ({ page }) => {
   expect(tree.body.tree[0].content).toBe(`${readFixture("docs/record.md")}- A new fact.\n`);
 });
 
-test("Publish opens the pull request, waits for green checks, then merges and deletes edits", async ({ page }) => {
+test("Publish opens the pull request, waits for green checks, then merges and moves edits up to the merge", async ({ page }) => {
   const fake = await createFake();
   await openEditor(page, fake);
   await openPage(page, "Physics & Ideas");
@@ -205,7 +206,8 @@ test("Publish opens the pull request, waits for green checks, then merges and de
   await expect(merge).toBeEnabled();
   await merge.click();
   await expect(dialog).toContainText("Merged.");
-  expect(fake.head("edits")).toBeNull();
+  expect(fake.head("edits")).toBe(fake.head("main"));
+  expect(fake.requests.filter((request) => request.method === "DELETE")).toHaveLength(0);
   expect(fake.fileAt("main", "physics.html")).toContain("Thinking about things (and stuff)");
   expect(fake.commit(fake.head("main")).parents).toHaveLength(2);
 });
@@ -281,7 +283,7 @@ test("drafts: in draft mode a change to live text waits as a new version, and pu
   await save(page);
   const saved = fake.fileAt("edits", "index.html");
   expect(saved).toContain(
-    '<p>Pick whatever sounds a bit interesting.</p>\n            <p data-draft="replace">Pick whatever sounds a bit interesting. Really.</p>\n',
+    `<p>Pick whatever sounds a bit interesting.</p>\n            <p data-draft="replace" data-draft-of="${sourceHash("<p>Pick whatever sounds a bit interesting.</p>")}">Pick whatever sounds a bit interesting. Really.</p>\n`,
   );
   const commit = fake.commit(fake.head("edits"));
   expect(commit.message.split("\n")[0]).toBe("Home: draft add “Really.”");
@@ -474,7 +476,7 @@ test("typing in a block that was never finished survives a reload", async ({ pag
   await typeAtEnd(page, anything, " Or small.");
   await page.waitForTimeout(1200);
   const mirrored = await page.evaluate(() => JSON.parse(globalThis.sessionStorage.getItem("siteEditor.working.v1:ThomasWCode/ThomasWCode.github.io-revised:index.html")).working);
-  expect(mirrored).toMatch(/<p data-draft="replace">\s*Anything big, small[^<]*what you need\. Or small\.\s*<\/p>/);
+  expect(mirrored).toMatch(/<p data-draft="replace" data-draft-of="[0-9a-f]{8}">\s*Anything big, small[^<]*what you need\. Or small\.\s*<\/p>/);
   expect(mirrored).toMatch(/<p>\s*Anything big, small[^<]*what you need\.\s*<\/p>/);
   await page.reload();
   await expect(page.locator("#draft-mode-button")).toHaveAttribute("aria-pressed", "true");

@@ -6,7 +6,7 @@
 // Files are read as blobs by SHA from the tree of the commit the editor loaded,
 // so the bytes always match the SHA recorded for stale-file detection. Saves go
 // through the Git Data API: one tree and one commit for every changed file, then
-// a fast-forward-only update of the branch.
+// a fast-forward-only update of the branch. No branch is ever deleted or forced.
 
 const API = "https://api.github.com";
 // The runs that publish a site: GitHub Pages' automatic build, and the live
@@ -115,14 +115,24 @@ export function createGitHubClient({ target, fetch, getAccessToken, now = () => 
     // Every file path in a commit, with its blob SHA.
     async getCommitTree(commitSha) {
       const commit = await client.getCommit(commitSha);
-      const tree = await json("GET", `${repo}/git/trees/${commit.tree.sha}?recursive=1`);
+      return { commit, treeSha: commit.tree.sha, files: await client.getTreeFiles(commit.tree.sha) };
+    },
+
+    // Every file path in a tree, with its blob SHA.
+    async getTreeFiles(treeSha) {
+      const tree = await json("GET", `${repo}/git/trees/${treeSha}?recursive=1`);
       if (tree.truncated) {
         throw new GitHubError({ status: 200, code: "tree_truncated", message: "The repository tree is too large to list." });
       }
       const files = new Map();
       for (const entry of tree.tree) if (entry.type === "blob") files.set(entry.path, entry.sha);
-      return { commit, treeSha: commit.tree.sha, files };
+      return files;
     },
+
+    // The commits that changed `path`, newest first, from `sha` back, as
+    // GitHub lists them: [{ sha, commit: { tree: { sha } } }].
+    listCommits: ({ sha, path, perPage = 20 }) =>
+      json("GET", `${repo}/commits?${new URLSearchParams({ sha, path, per_page: String(perPage) })}`),
 
     // A text file's exact bytes, decoded as UTF-8 (invalid UTF-8 throws). The
     // JSON form (base64) is always served by api.github.com, the only API host
@@ -160,9 +170,14 @@ export function createGitHubClient({ target, fetch, getAccessToken, now = () => 
       const commit = await json("POST", `${repo}/git/commits`, {
         body: { message, tree: tree.sha, parents: [parentSha] },
       });
-      await json("PATCH", `${repo}/git/refs/heads/${encodePath(branch)}`, { body: { sha: commit.sha, force: false } });
+      await client.updateRef(branch, commit.sha);
       return { sha: commit.sha, treeSha: tree.sha };
     },
+
+    // Moves `branch` to `sha` as a fast-forward only, never a force: GitHub
+    // refuses (code "not_fast_forward") when the branch holds a commit `sha`
+    // lacks, as when a save landed on it meanwhile.
+    updateRef: (branch, sha) => json("PATCH", `${repo}/git/refs/heads/${encodePath(branch)}`, { body: { sha, force: false } }),
 
     compare: (base, head) => json("GET", `${repo}/compare/${encodePath(base)}...${encodePath(head)}`),
 
@@ -228,10 +243,6 @@ export function createGitHubClient({ target, fetch, getAccessToken, now = () => 
     async mergeBranch(base, head, message) {
       const response = await request("POST", `${repo}/merges`, { body: { base, head, commit_message: message }, allow: [204] });
       return response.status === 204 ? null : (await response.json()).sha;
-    },
-
-    async deleteBranch(branch) {
-      await request("DELETE", `${repo}/git/refs/heads/${encodePath(branch)}`, { allow: [404, 422] });
     },
   };
   return client;

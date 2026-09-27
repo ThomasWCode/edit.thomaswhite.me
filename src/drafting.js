@@ -7,7 +7,9 @@
 //   "new"      content that isn't live: added as a draft, a phrase, or live
 //              content taken off the site until it is published again
 //   "replace"  a new version of the live element straight before it; the
-//              live one stays until the draft is published
+//              live one stays until the draft is published. It records the
+//              live element as it was (data-draft-of, a short hash of its
+//              source), and isn't published once that has changed.
 //   "remove"   live content that goes when the draft is published
 //
 // Placeholders (draft-note, draft-inline) and data-draft="check" come from
@@ -180,12 +182,71 @@ export function liveSource(model) {
   return applySplices(model.source, splices.filter(Boolean));
 }
 
-// A copy of an element's source for a replace draft: marked, and with every
-// id renamed data-draft-id so the preview never has an id twice (publishing
-// renames them back).
-function draftCopy(source, node, kind) {
+// A copy of an element's source for a replace draft: marked, with the hash of
+// the live element's source (`of`), and with every id renamed data-draft-id
+// so the preview never has an id twice (publishing renames them back).
+function draftCopy(source, node, kind, of) {
   const copy = source.replace(/<[a-zA-Z][^>]*>/g, (tag) => tag.replace(/(\s)id(\s*=)/g, "$1data-draft-id$2"));
-  return copy.replace(new RegExp(`^<${node.tagName}`, "i"), `<${node.tagName} data-draft="${kind}"`);
+  return copy.replace(new RegExp(`^<${node.tagName}`, "i"), `<${node.tagName} data-draft="${kind}" data-draft-of="${of}"`);
+}
+
+// A short hash of an element's source: FNV-1a over its UTF-8 bytes, as eight
+// hex digits. A new version records its live element's in data-draft-of.
+export function sourceHash(text) {
+  let hash = 0x811c9dc5;
+  for (const byte of new TextEncoder().encode(text)) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+  return hash.toString(16).padStart(8, "0");
+}
+
+const sourceOf = (model, node) => model.source.slice(node.sourceCodeLocation.startOffset, node.sourceCodeLocation.endOffset);
+
+// The live element a new version replaces: straight before it, with the same
+// tag, and not a draft itself. Null when there is none.
+function liveBefore(node) {
+  const live = previousElementSibling(node);
+  return live && live.tagName === node.tagName && !hasAttribute(live, "data-draft") && live.sourceCodeLocation ? live : null;
+}
+
+// Whether the live element before the new version at `key` has changed since
+// the version was made (main changed it, say): its source no longer has the
+// hash recorded in data-draft-of, or none was recorded. False when there is
+// no such live element (publishing refuses that for its own reason).
+export function liveChanged(model, key) {
+  const node = model.nodeOf.get(key);
+  const live = node && attribute(node, "data-draft") === "replace" ? liveBefore(node) : null;
+  return Boolean(live) && attribute(node, "data-draft-of") !== sourceHash(sourceOf(model, live));
+}
+
+export const LIVE_CHANGED =
+  "The live version before this new version has changed since it was made (in a Claude session, say), so publishing it now would undo that change. Carry the change into the new version, then record the live version as it is now.";
+
+// Records the live element as it is now on the new version at `key`, once
+// its change has been carried into the new version by hand: publishing the
+// new version then works again.
+export function recordLive(model, key) {
+  const node = requireNode(model, key);
+  if (attribute(node, "data-draft") !== "replace") throw new EditRejectedError("Only a new version records the live version it replaces.");
+  const live = liveBefore(node);
+  if (!live) throw new EditRejectedError("The live version this draft replaces isn't straight before it any more. Discard the draft, or fix it in a Claude session.");
+  return apply(model, [setAttributeSplice(model, node, "data-draft-of", sourceHash(sourceOf(model, live)))]);
+}
+
+// The live element as it was when a new version recorded it, found in an
+// older version of the page (`source`): the element before a replace draft
+// whose data-draft-of is `recorded`, with that hash. { source, text }, or null.
+export function liveAsItWas(source, path, recorded) {
+  let model;
+  try {
+    model = buildPageModel(source, { path });
+  } catch {
+    return null;
+  }
+  for (const draft of model.drafts) {
+    if (draft.kind !== "replace" || attribute(draft.node, "data-draft-of") !== recorded) continue;
+    const live = liveBefore(draft.node);
+    if (live && sourceHash(sourceOf(model, live)) === recorded) return { source: sourceOf(model, live), text: collapse(textOf(live)) };
+  }
+  return null;
 }
 
 // The source range [start, end) of `a` that differs from `b`, and the prefix
@@ -275,7 +336,7 @@ export function asDraft(before, after) {
   const newline = a.indexOf("\n", location.endOffset);
   const lead = a.slice(lineBegin, location.startOffset);
   const tail = a.slice(location.endOffset, newline === -1 ? a.length : newline);
-  const copy = draftCopy(changed, unit, "replace");
+  const copy = draftCopy(changed, unit, "replace", sourceHash(a.slice(location.startOffset, location.endOffset)));
   const text = lead.trim() || tail.trim() ? copy : `\n${lead}${copy}`;
   return apply(before, [{ start: location.endOffset, end: location.endOffset, text }]);
 }
@@ -330,7 +391,8 @@ function unwrapSplices(node) {
 const isPhrase = (node) => node.tagName === "span" && node.attrs.length === 1 && node.sourceCodeLocation && node.sourceCodeLocation.endTag;
 
 // Publishing a draft makes it live on the next Publish: a new draft loses its
-// marker; a new version takes the live element's place; a removal takes the
+// marker; a new version takes the live element's place (refused once the live
+// element has changed since the version was made); a removal takes the
 // element away.
 export function publishDraft(model, key) {
   const node = requireNode(model, key);
@@ -339,11 +401,17 @@ export function publishDraft(model, key) {
   if (kind === "new") return apply(model, [removeAttributeSplice(model, node, "data-draft"), ...restoreIds(model, node)]);
   if (kind === "remove") return apply(model, [removalSplice(model.source, node)]);
   if (kind === "replace") {
-    const live = previousElementSibling(node);
-    if (!live || live.tagName !== node.tagName || hasAttribute(live, "data-draft")) {
+    const live = liveBefore(node);
+    if (!live) {
       throw new EditRejectedError("The live version this draft replaces isn't straight before it any more. Discard the draft, or fix it in a Claude session.");
     }
-    return apply(model, [removalSplice(model.source, live), removeAttributeSplice(model, node, "data-draft"), ...restoreIds(model, node)]);
+    if (liveChanged(model, key)) throw new EditRejectedError(LIVE_CHANGED);
+    return apply(model, [
+      removalSplice(model.source, live),
+      removeAttributeSplice(model, node, "data-draft"),
+      removeAttributeSplice(model, node, "data-draft-of"),
+      ...restoreIds(model, node),
+    ]);
   }
   throw new EditRejectedError("Finish this draft with Done or Approve.");
 }
