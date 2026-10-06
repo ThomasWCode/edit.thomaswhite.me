@@ -1,0 +1,46 @@
+# Routine version updates for the development toolchain and the workflow
+# actions: once a month, grouped, so a month brings at most four pull requests.
+# Security updates are separate: GitHub opens those as soon as an advisory is
+# published, whatever this file says.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    # Propose a release only once it is a week old, so a broken or compromised
+    # one is usually caught first. Security updates are not delayed.
+    cooldown:
+      default-days: 7
+    groups:
+      # parse5, entities and esbuild build vendor/parse5.js. Their pull request
+      # fails tests/unit/vendor.test.mjs until `npm run vendor` is run on its
+      # branch and the rebuilt file committed.
+      vendored-parser:
+        patterns:
+          - parse5
+          - entities
+          - esbuild
+      # wrangler on its own: when its miniflare pins a newer sharp,
+      # tests/unit/overrides.test.mjs fails until the sharp override goes.
+      wrangler:
+        patterns:
+          - wrangler
+      dev-tools:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - parse5
+          - entities
+          - esbuild
+          - wrangler
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"
