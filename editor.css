@@ -194,8 +194,11 @@ h3 {
 
 /* Layout */
 
+/* One column no wider than the window: a long status line is cut short with
+   an ellipsis instead of widening the page into sideways scrolling. */
 .app {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr;
   height: 100dvh;
 }
@@ -217,7 +220,9 @@ h3 {
   gap: 0.6rem;
 }
 
-.sidebar-toggle {
+.sidebar-toggle,
+.bars-toggle,
+.panel-toggle {
   display: none;
 }
 
@@ -520,6 +525,28 @@ h3 {
   background: var(--paper);
 }
 
+/* Folds the panel away where it sits under the page (narrower screens). */
+.panel-toggle {
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 2rem;
+  padding: 0.25rem 0.75rem;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.panel-toggle:hover {
+  color: var(--ink);
+  background: var(--warm);
+}
+
 .panel h2 {
   margin: 0 0 0.5rem;
   font-size: 1rem;
@@ -559,20 +586,30 @@ h3 {
   background: rgba(23, 56, 43, 0.35);
 }
 
-/* Narrower screens: the panel moves under the page, then the file list
-   becomes a drawer. */
+/* Narrower screens: the panel moves under the page, with a bar that folds it
+   away, then the file list becomes a drawer and the top bars fold too. */
 
 @media (max-width: 1100px) {
   .workspace {
     grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-rows: minmax(0, 1fr) auto auto;
+  }
+
+  .panel-toggle {
+    display: flex;
+    grid-column: 2;
+    grid-row: 2;
   }
 
   .panel {
     grid-column: 2;
+    grid-row: 3;
     max-height: 40dvh;
-    border-top: 1px solid var(--line);
     border-left: 0;
+  }
+
+  .app[data-panel="collapsed"] .panel {
+    display: none;
   }
 
   .stage {
@@ -581,7 +618,7 @@ h3 {
   }
 
   .sidebar {
-    grid-row: 1 / span 2;
+    grid-row: 1 / span 3;
   }
 }
 
@@ -591,6 +628,7 @@ h3 {
   }
 
   .stage,
+  .panel-toggle,
   .panel {
     grid-column: 1;
   }
@@ -611,25 +649,76 @@ h3 {
     transform: none;
   }
 
-  .sidebar-toggle {
+  .sidebar-toggle,
+  .bars-toggle {
     display: inline-flex;
   }
 
-  .topbar-status {
-    order: 3;
-    flex-basis: 100%;
-  }
-
-  /* On a phone the page itself gets the room: no site link, file path or
-     width toggle, and a shorter panel. */
+  /* On a phone the page itself gets the room: no editor name, site link, file
+     path or width toggle, and a shorter panel. The top bar is Pages and the
+     fold toggle; the four actions; then the status line and the account, in
+     the markup's order so Tab follows the rows. */
   .topbar {
+    gap: 0.4rem;
     padding: 0.4rem 0.75rem;
   }
 
+  .topbar .button {
+    padding-right: 0.6rem;
+    padding-left: 0.6rem;
+  }
+
+  .topbar-name,
   .topbar-site,
   .stage-path,
   #width-toggle {
     display: none;
+  }
+
+  .topbar-title {
+    flex: 1 1 100%;
+    align-items: center;
+  }
+
+  .bars-toggle {
+    min-width: 2.25rem;
+  }
+
+  .topbar-actions {
+    display: contents;
+  }
+
+  .topbar-actions > .button {
+    order: 1;
+  }
+
+  .topbar-status {
+    order: 2;
+    flex: 1 1 10rem;
+  }
+
+  .account {
+    order: 3;
+    margin-left: auto;
+  }
+
+  /* Folded: one row of Pages and the toggle, then Undo and Save (Drafts too
+     while it is on, so the mode is never out of sight). */
+  .app[data-top="collapsed"] :is(.topbar-status, .account, #publish-button, .draft-toggle[aria-pressed="false"], .stage-bar) {
+    display: none;
+  }
+
+  .app[data-top="collapsed"] .topbar {
+    gap: 0.25rem;
+  }
+
+  .app[data-top="collapsed"] .topbar-title {
+    flex: 1 1 auto;
+  }
+
+  .app[data-top="collapsed"] .topbar .button {
+    padding-right: 0.45rem;
+    padding-left: 0.45rem;
   }
 
   .stage-bar {

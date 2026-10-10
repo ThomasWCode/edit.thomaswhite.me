@@ -1631,6 +1631,37 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
     renderPanel();
   }
 
+  // ---- Collapsing the bars -----------------------------------------------------------
+  // On a phone the top bars, and wherever the panel sits under the page the
+  // panel, fold away to give the page the room. Remembered for this tab only.
+
+  const BAR_LABELS = {
+    top: { toggle: "topbar-toggle", open: "▴", closed: "▾", openTitle: "Hide the top bars", closedTitle: "Show the top bars" },
+    panel: { toggle: "panel-toggle", open: "▾ Hide panel", closed: "▴ Show panel" },
+  };
+
+  function readCollapsed(bar) {
+    try {
+      return sessionStorage.getItem(`siteEditor.collapsed.${bar}`) === "yes";
+    } catch {
+      return false;
+    }
+  }
+
+  function setCollapsed(bar, collapsed) {
+    $("app").dataset[bar] = collapsed ? "collapsed" : "open";
+    try {
+      sessionStorage.setItem(`siteEditor.collapsed.${bar}`, collapsed ? "yes" : "no");
+    } catch {
+      // A convenience only: the bar stays as it is until the tab closes.
+    }
+    const labels = BAR_LABELS[bar];
+    const toggle = $(labels.toggle);
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.textContent = collapsed ? labels.closed : labels.open;
+    if (labels.openTitle) toggle.title = collapsed ? labels.closedTitle : labels.openTitle;
+  }
+
   function renderFileList() {
     const lists = { page: $("page-list"), record: $("record-list"), blog: $("blog-source-list"), gone: $("gone-list") };
     for (const list of Object.values(lists)) list.replaceChildren();
@@ -2096,6 +2127,10 @@ export function createApp({ target, client, user, onSignedOut, suggest = null })
       sidebar.dataset.open = String(open);
       $("sidebar-toggle").setAttribute("aria-expanded", String(open));
     };
+    for (const bar of Object.keys(BAR_LABELS)) {
+      setCollapsed(bar, readCollapsed(bar));
+      $(BAR_LABELS[bar].toggle).onclick = () => setCollapsed(bar, $("app").dataset[bar] !== "collapsed");
+    }
     for (const toggle of $("width-toggle").querySelectorAll("button")) {
       toggle.onclick = () => {
         for (const other of $("width-toggle").querySelectorAll("button")) other.setAttribute("aria-pressed", String(other === toggle));

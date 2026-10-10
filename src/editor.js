@@ -38,6 +38,7 @@ function showView(view) {
   $("editor-view").hidden = view !== "editor";
   $("topbar-actions").hidden = view !== "editor";
   $("sidebar-toggle").hidden = view !== "editor";
+  $("topbar-toggle").hidden = view !== "editor";
 }
 
 function showSignIn(auth, message = "", tone = "error") {
