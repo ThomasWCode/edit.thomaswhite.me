@@ -283,7 +283,15 @@ h3 {
   font-weight: 700;
 }
 
-/* Sign-in */
+/* Sign-in: the title and two buttons, without the top bar */
+
+.app:not([data-view="editor"]) {
+  grid-template-rows: 1fr;
+}
+
+.app:not([data-view="editor"]) .topbar {
+  display: none;
+}
 
 .signin {
   display: grid;
@@ -292,17 +300,25 @@ h3 {
 }
 
 .signin-card {
+  display: grid;
+  gap: 0.75rem;
   width: min(28rem, 100%);
   padding: 2rem;
   border: 1px solid var(--line);
   border-radius: 18px;
   background: var(--paper);
   box-shadow: var(--shadow);
+  text-align: center;
 }
 
 .signin-card h1 {
   margin: 0 0 0.5rem;
   font-size: 1.75rem;
+  letter-spacing: 0.04em;
+}
+
+.signin-card .notice {
+  margin: 0;
 }
 
 /* Workspace */
