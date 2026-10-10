@@ -460,6 +460,42 @@ test("unsaved edits survive a reload, and the phone preview is 390 pixels wide",
   expect(Math.round((await page.locator("#page-frame").boundingBox()).width)).toBeLessThanOrEqual(390);
 });
 
+test("on a phone, Drafts on never widens the page, and the top bars and the panel fold away", async ({ page }) => {
+  const fake = await createFake();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openEditor(page, fake);
+  const pageWidth = () => page.evaluate(() => document.documentElement.scrollWidth);
+  expect(await pageWidth()).toBe(390);
+
+  await page.locator("#draft-mode-button").click();
+  await expect(page.locator("#status-line")).toContainText("Drafts on");
+  expect(await pageWidth()).toBe(390);
+  await frame(page).locator("p", { hasText: "Pick whatever sounds a bit interesting." }).click();
+  expect(await pageWidth()).toBe(390);
+
+  const frameHeight = async () => (await page.locator("#page-frame").boundingBox()).height;
+  const before = await frameHeight();
+  await page.locator("#topbar-toggle").click();
+  await expect(page.locator("#topbar-toggle")).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#status-line")).toBeHidden();
+  await expect(page.locator(".stage-bar")).toBeHidden();
+  await expect(page.locator("#save-button")).toBeVisible();
+  await expect(page.locator("#draft-mode-button")).toBeVisible();
+  await page.getByRole("button", { name: "Hide panel" }).click();
+  await expect(page.locator("#panel")).toBeHidden();
+  expect(await frameHeight()).toBeGreaterThan(before * 1.5);
+  expect(await pageWidth()).toBe(390);
+
+  await page.reload();
+  await frameReady(page);
+  await expect(page.locator("#panel")).toBeHidden();
+  await expect(page.locator(".stage-bar")).toBeHidden();
+  await page.getByRole("button", { name: "Show panel" }).click();
+  await page.locator("#topbar-toggle").click();
+  await expect(page.locator("#panel")).toBeVisible();
+  await expect(page.locator("#status-line")).toBeVisible();
+});
+
 test("typing in a block that was never finished survives a reload", async ({ page }) => {
   const fake = await createFake();
   await openEditor(page, fake);
