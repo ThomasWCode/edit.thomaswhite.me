@@ -655,8 +655,9 @@ h3 {
   }
 
   /* On a phone the page itself gets the room: no editor name, site link, file
-     path or width toggle, and a shorter panel. The top bar is Pages, the
-     account and the fold toggle; the four actions; then the status line. */
+     path or width toggle, and a shorter panel. The top bar is Pages and the
+     fold toggle; the four actions; then the status line and the account, in
+     the markup's order so Tab follows the rows. */
   .topbar {
     gap: 0.4rem;
     padding: 0.4rem 0.75rem;
@@ -674,38 +675,35 @@ h3 {
     display: none;
   }
 
+  .topbar-title {
+    flex: 1 1 100%;
+    align-items: center;
+  }
+
+  .bars-toggle {
+    min-width: 2.25rem;
+  }
+
   .topbar-actions {
     display: contents;
   }
 
-  .account {
-    order: 1;
-    margin-left: auto;
-  }
-
-  .bars-toggle {
-    order: 2;
-    min-width: 2.25rem;
-  }
-
-  .topbar::after {
-    content: "";
-    order: 3;
-    flex-basis: 100%;
-    margin-top: -0.4rem;
-  }
-
   .topbar-actions > .button {
-    order: 4;
+    order: 1;
   }
 
   .topbar-status {
-    order: 5;
-    flex-basis: 100%;
+    order: 2;
+    flex: 1 1 10rem;
   }
 
-  /* Folded: one row of Pages, Undo, Save and the toggle (Drafts too while it
-     is on, so the mode is never out of sight). */
+  .account {
+    order: 3;
+    margin-left: auto;
+  }
+
+  /* Folded: one row of Pages and the toggle, then Undo and Save (Drafts too
+     while it is on, so the mode is never out of sight). */
   .app[data-top="collapsed"] :is(.topbar-status, .account, #publish-button, .draft-toggle[aria-pressed="false"], .stage-bar) {
     display: none;
   }
@@ -714,18 +712,13 @@ h3 {
     gap: 0.25rem;
   }
 
+  .app[data-top="collapsed"] .topbar-title {
+    flex: 1 1 auto;
+  }
+
   .app[data-top="collapsed"] .topbar .button {
     padding-right: 0.45rem;
     padding-left: 0.45rem;
-  }
-
-  .app[data-top="collapsed"] .topbar::after {
-    display: none;
-  }
-
-  .app[data-top="collapsed"] .bars-toggle {
-    order: 5;
-    margin-left: auto;
   }
 
   .stage-bar {
